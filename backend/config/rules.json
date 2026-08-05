@@ -1,0 +1,104 @@
+{
+  "categories": {
+    "Documents": [
+      ".pdf",
+      ".doc",
+      ".docx",
+      ".txt",
+      ".xls",
+      ".xlsx",
+      ".ppt",
+      ".pptx",
+      ".csv",
+      ".odt",
+      ".rtf"
+    ],
+    "Images": [
+      ".jpg",
+      ".jpeg",
+      ".png",
+      ".gif",
+      ".bmp",
+      ".svg",
+      ".webp",
+      ".ico",
+      ".tiff"
+    ],
+    "Videos": [
+      ".mp4",
+      ".mkv",
+      ".avi",
+      ".mov",
+      ".wmv",
+      ".flv",
+      ".webm"
+    ],
+    "Audio": [
+      ".mp3",
+      ".wav",
+      ".flac",
+      ".aac",
+      ".m4a",
+      ".ogg"
+    ],
+    "Archives": [
+      ".zip",
+      ".rar",
+      ".7z",
+      ".tar",
+      ".gz"
+    ],
+    "Software": [
+      ".exe",
+      ".msi",
+      ".apk",
+      ".dmg"
+    ],
+    "Source Code": [
+      ".py",
+      ".js",
+      ".jsx",
+      ".ts",
+      ".tsx",
+      ".java",
+      ".c",
+      ".cpp",
+      ".html",
+      ".css",
+      ".json",
+      ".xml",
+      ".sh",
+      ".ipynb"
+    ]
+  },
+  "extension_rules": {
+    ".py": "Python Projects",
+    ".pdf": "PDF"
+  },
+  "disabled_extension_rules": {},
+  "keyword_rules": [
+    {
+      "keyword": "invoice",
+      "folder": "Finance Folder"
+    },
+    {
+      "keyword": "college",
+      "folder": "Semester 9"
+    }
+  ],
+  "disabled_keyword_rules": [],
+  "large_file_threshold_mb": 500,
+  "large_file_folder": "Large Files",
+  "large_file_enabled": true,
+  "archive_after_days": 30,
+  "archive_folder": "Archive",
+  "default_category": "Others",
+  "auto_organize_unknown_extensions": true,
+  "enable_timestamp_rename": false,
+  "timestamp_rename_categories": [
+    "Images"
+  ],
+  "realtime_monitoring_enabled": false,
+  "desktop_notifications_enabled": true,
+  "duplicate_handling": "rename"
+}

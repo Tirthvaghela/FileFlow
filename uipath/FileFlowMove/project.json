@@ -1,0 +1,57 @@
+{
+  "name": "FileFlowMove",
+  "projectId": "8f2c1a4e-9b3d-4a7e-8c5f-1e6d9a2b3c4d",
+  "description": "Minimal standalone package invoked by the FastAPI backend to physically execute a file move via UiPath Robot -- kept separate from the FileFlow/ demo project so this integration never risks the submission's standalone 5-workflow demo.",
+  "main": "MoveFile.xaml",
+  "dependencies": {
+    "UiPath.System.Activities": "[26.6.2]"
+  },
+  "webServices": [],
+  "entitiesStores": [],
+  "schemaVersion": "4.0",
+  "studioVersion": "26.0.198.0",
+  "projectVersion": "1.0.1",
+  "runtimeOptions": {
+    "autoDispose": false,
+    "netFrameworkLazyLoading": false,
+    "isPausable": true,
+    "isAttended": false,
+    "requiresUserInteraction": true,
+    "supportsPersistence": false,
+    "workflowSerialization": "NewtonsoftJson",
+    "excludedLoggedData": [
+      "Private:*",
+      "*password*"
+    ],
+    "executionType": "Workflow",
+    "readyForPiP": false,
+    "startsInPiP": false,
+    "mustRestoreAllDependencies": true,
+    "pipType": "ChildSession"
+  },
+  "designOptions": {
+    "projectProfile": "Developement",
+    "outputType": "Process",
+    "libraryOptions": {
+      "privateWorkflows": []
+    },
+    "processOptions": {
+      "ignoredFiles": []
+    },
+    "fileInfoCollection": [],
+    "saveToCloud": false
+  },
+  "expressionLanguage": "VisualBasic",
+  "entryPoints": [
+    {
+      "filePath": "MoveFile.xaml",
+      "uniqueId": "3d5e7f9a-1b2c-4d6e-8f0a-2b4c6d8e0f1a",
+      "input": [],
+      "output": []
+    }
+  ],
+  "isTemplate": false,
+  "templateProjectData": {},
+  "publishData": {},
+  "targetFramework": "Windows"
+}

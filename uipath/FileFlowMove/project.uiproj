@@ -1,0 +1,6 @@
+{
+  "Name": "FileFlowMove",
+  "ProjectType": "Process",
+  "Description": "Minimal standalone package invoked by the FastAPI backend to physically execute a file move via UiPath Robot -- kept separate from the FileFlow/ demo project so this integration never risks the submission's standalone 5-workflow demo.",
+  "MainFile": "MoveFile.xaml"
+}
