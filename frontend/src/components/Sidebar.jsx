@@ -42,7 +42,10 @@ export default function Sidebar() {
   async function toggleAutomation() {
     if (!rules) return;
     try {
-      await saveRules({ ...rules, realtime_monitoring_enabled: !rules.realtime_monitoring_enabled });
+      await saveRules((current) => ({
+        ...current,
+        realtime_monitoring_enabled: !current.realtime_monitoring_enabled,
+      }));
     } catch {
       // saveRules already rolled the shared state back on failure
     }
@@ -58,7 +61,7 @@ export default function Sidebar() {
           <motion.span
             whileHover={{ rotate: [0, -10, 10, -10, 0] }}
             transition={{ duration: 0.5 }}
-            className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--series-1)] text-white shadow-sm shadow-[var(--series-1)]/30 cursor-pointer"
+            className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--brand)] text-[var(--brand-foreground)] shadow-sm shadow-[var(--brand)]/30 cursor-pointer"
           >
             <FolderKanban className="h-[18px] w-[18px]" />
           </motion.span>
@@ -82,7 +85,7 @@ export default function Sidebar() {
                 <div
                   className={`group flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors relative cursor-pointer select-none ${
                     isActive
-                      ? "font-medium text-[var(--series-1)]"
+                      ? "font-medium text-[var(--brand)]"
                       : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
                   }`}
                 >
@@ -90,7 +93,7 @@ export default function Sidebar() {
                   {isActive && (
                     <motion.span
                       layoutId="activeNavIndicator"
-                      className="absolute inset-0 -z-10 rounded-lg bg-[var(--series-1)]/10 border border-[var(--series-1)]/15 nav-pill-glow"
+                      className="absolute inset-0 -z-10 rounded-lg bg-[var(--brand)]/10 border border-[var(--brand)]/15 nav-pill-glow"
                       transition={{ type: "spring", stiffness: 380, damping: 30 }}
                     />
                   )}
@@ -156,13 +159,13 @@ export default function Sidebar() {
         <div className="mb-3">
           <div className="mb-1 flex items-center justify-between text-xs">
             <span className="text-[var(--text-muted)]">Storage saved</span>
-            <span className="font-medium text-[var(--series-1)]">
+            <span className="font-medium text-[var(--brand)]">
               {formatBytes(storageSaved)}
             </span>
           </div>
           <div className="h-1.5 overflow-hidden rounded-full bg-[var(--gridline)]">
             <motion.div
-              className="h-full rounded-full bg-[var(--series-1)]"
+              className="h-full rounded-full bg-[var(--brand)]"
               initial={{ width: 0 }}
               animate={{ width: `${Math.min(100, (storageSaved / (500 * 1024 * 1024)) * 100)}%` }}
               transition={{ duration: 0.8, ease: "easeOut" }}

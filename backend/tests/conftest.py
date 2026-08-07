@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 import rules.rule_engine as rule_engine_module
 from api.rate_limit import reset_all as reset_rate_limits
 from config.settings import settings
-from database.db import client as mongo_client, get_db, insert_with_id
+from database.db import client as mongo_client, get_db, init_db, insert_with_id
 from main import app
 from models.models import Document, new_activity_log
 from rules.rule_engine import RuleEngine
@@ -57,6 +57,12 @@ def db_session():
     needed since mongod is already running locally."""
     db_name = f"fileflow_test_{uuid.uuid4().hex}"
     database = mongo_client[db_name]
+    # Same indexes production applies (init_db()) -- without this, a test
+    # database with no unique/partial indexes at all can't catch bugs that
+    # only manifest against a real index (e.g. a uniqueness constraint
+    # that's subtly wrong in a way real data exposes but an empty,
+    # unindexed collection never would).
+    init_db(database)
     try:
         yield database
     finally:

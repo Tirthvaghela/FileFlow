@@ -48,6 +48,13 @@ class Settings:
 
     ARCHIVE_CHECK_INTERVAL_HOURS: int = 24
 
+    # How often the scheduler checks whether any account's configured
+    # scheduled-organize time has arrived. Minutes, not hours, since a
+    # per-account clock time (e.g. "02:00") needs a check granularity fine
+    # enough to actually catch that moment, unlike the once-a-day archive
+    # sweep above.
+    SCHEDULED_ORGANIZE_CHECK_INTERVAL_MINUTES: int = 5
+
     # Optional real RPA integration: when enabled, the physical file-move
     # step is executed by UiPath Robot (uipath/FileFlowMove/MoveFile.xaml)
     # instead of a plain Python shutil.move. Off by default -- opt in via
@@ -65,12 +72,16 @@ class Settings:
     UIPATH_ENTRY_POINT: str = os.getenv("UIPATH_ENTRY_POINT", "MoveFile.xaml")
     UIPATH_TIMEOUT_SECONDS: int = int(os.getenv("UIPATH_TIMEOUT_SECONDS", "30"))
 
-    # Weekly email digest via Resend (https://resend.com), sent to each
-    # account's own registered email. Off by default -- sending only
-    # happens once RESEND_API_KEY is set, and the scheduled job only runs
-    # when WEEKLY_DIGEST_ENABLED is set.
-    RESEND_API_KEY: str | None = os.getenv("RESEND_API_KEY") or None
-    RESEND_FROM_EMAIL: str = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev")
+    # Outgoing email (weekly digest, password reset) via SMTP -- e.g. Gmail
+    # with an App Password (myaccount.google.com/apppasswords, requires
+    # 2-Step Verification). Sending only happens once both SMTP_USERNAME
+    # and SMTP_PASSWORD are set; the scheduled digest job additionally only
+    # runs when WEEKLY_DIGEST_ENABLED is set.
+    SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USERNAME: str | None = os.getenv("SMTP_USERNAME") or None
+    SMTP_PASSWORD: str | None = os.getenv("SMTP_PASSWORD") or None
+    SMTP_FROM_EMAIL: str = os.getenv("SMTP_FROM_EMAIL") or os.getenv("SMTP_USERNAME") or ""
     WEEKLY_DIGEST_ENABLED: bool = os.getenv("WEEKLY_DIGEST_ENABLED", "false").lower() == "true"
 
     # Signs session JWTs. Falls back to a fresh random key per process when
@@ -90,6 +101,20 @@ class Settings:
     REGISTER_RATE_LIMIT_WINDOW_SECONDS: float = float(
         os.getenv("REGISTER_RATE_LIMIT_WINDOW_SECONDS", "3600")
     )
+    PASSWORD_RESET_RATE_LIMIT_MAX: int = int(os.getenv("PASSWORD_RESET_RATE_LIMIT_MAX", "5"))
+    PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS: float = float(
+        os.getenv("PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS", "3600")
+    )
+
+    # Base URL of the deployed frontend -- used to build the link inside the
+    # password reset email. Defaults to the local Vite dev server.
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+
+    # How long a "forgot password" link stays valid before it must be
+    # re-requested.
+    PASSWORD_RESET_TOKEN_EXPIRY_MINUTES: int = int(
+        os.getenv("PASSWORD_RESET_TOKEN_EXPIRY_MINUTES", "30")
+    )
 
 
 settings = Settings()
@@ -107,8 +132,29 @@ def resolve_watch_folder(path) -> Path:
     return resolved
 
 
+def paths_overlap(a: Path, b: Path) -> bool:
+    """True if `a` and `b` are the same folder, or either is nested inside
+    the other. An exact-match check alone isn't enough to keep two
+    accounts' watch folders isolated -- pointing your own watch folder at a
+    *subfolder* of someone else's tree (or vice versa) gives you the same
+    access to their files without ever matching their path exactly."""
+    return a == b or a in b.parents or b in a.parents
+
+
 def default_watch_folder_for(user_id: int) -> Path:
     """Each account's default watched folder -- a private subfolder under
     the shared watch root, created the first time it's needed. Editable
     per-account afterward via Settings."""
     return resolve_watch_folder(settings.WATCH_FOLDER / f"user_{user_id}")
+
+
+def all_watch_folders(user: dict) -> list[Path]:
+    """Every folder this account has FileFlow watching -- the primary
+    watch_folder plus any additional_watch_folders, all sharing the same
+    rules. The single choke point for "every folder", so archiving, the
+    scheduled sweep, and organize-existing all agree on what "this
+    account's folders" means instead of each hardcoding watch_folder alone
+    and silently ignoring additional ones."""
+    folders = [Path(user["watch_folder"])]
+    folders.extend(Path(f) for f in user.get("additional_watch_folders", None) or [])
+    return folders

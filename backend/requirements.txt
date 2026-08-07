@@ -12,3 +12,6 @@ reportlab==4.2.5
 bcrypt==5.0.0
 PyJWT==2.13.0
 email-validator==2.3.0
+pyotp==2.10.0
+qrcode==8.2
+Pillow==12.3.0

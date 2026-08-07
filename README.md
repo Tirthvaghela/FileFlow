@@ -14,7 +14,7 @@
 
 **FileFlow** is an intelligent **Robotic Process Automation (RPA)** based file management system that automatically organizes files downloaded by the user.
 
-Instead of manually sorting downloaded files, FileFlow continuously monitors a watch folder, intelligently classifies files, moves them into appropriate folders, handles duplicate files, creates folders automatically, maintains a per-account activity log, and provides real-time analytics through a modern web dashboard — with multiple independent accounts, each with their own folder, rules, and data.
+Instead of manually sorting downloaded files, FileFlow continuously monitors one or more watch folders, intelligently classifies files (by extension, keyword, regex, file age, or even content), moves them into appropriate folders, handles duplicate files, creates folders automatically, maintains a per-account activity log, and provides real-time analytics through a modern web dashboard — with multiple independent accounts, each with their own folders, rules, and data. A downloadable Windows agent lets FileFlow watch a folder on your own machine even when the dashboard is hosted elsewhere, complete with auto-update and two-factor-protected accounts.
 
 The project combines **React**, **FastAPI**, **MongoDB**, and **UiPath** to demonstrate how RPA can automate repetitive day-to-day file management tasks.
 
@@ -63,10 +63,14 @@ Every account gets its own watch folder, its own automation rules, its own activ
 
 ## 📁 Automatic Watch Folder Monitoring
 
-- Real-time monitoring of each account's own watch folder
+- Real-time monitoring of each account's own watch folder(s)
+- **Multiple watch folders per account** — add extra folders from Settings; all share the same rules and get organized independently (real-time watching, the manual sweep, archiving, and the scheduled nightly sweep all cover every folder, not just the first one)
+- Pick a folder with a real native folder-picker dialog, no typing/pasting a path required (local dev setup only — see [Remote Agent](#-remote-agent--watch-your-own-machine) for watching a folder on a different machine than the dashboard)
 - Detects newly downloaded (or dropped) files instantly
 - No manual intervention required
 - Togglable per account from Settings
+- **Scheduled nightly sweep** — optionally run the "organize existing files" sweep automatically once a day at a chosen time, in addition to real-time watching and the on-demand button
+- If a remote agent (see below) is actively connected for an account, the backend's own local watcher steps aside so the same file is never processed twice
 
 ---
 
@@ -123,7 +127,7 @@ IMG_1234.jpg
 
 ## ⚙ Custom Automation Rules
 
-Each account can define its own automation rules.
+Each account can define its own automation rules, evaluated in order of specificity: filename keyword → regex → content keyword → extension → large-file → file age → generic category → fallback.
 
 Example:
 
@@ -144,6 +148,18 @@ Keyword : Invoice
 
 Finance Folder
 ```
+
+**Beyond extension and keyword, rules can also match:**
+
+- **Regex** — a pattern against the filename (e.g. `^IMG_\d+` → `Camera`), validated server-side so an uncompilable pattern is rejected before it's ever saved
+- **Content keyword** — searches inside the file's own bytes (first 64KB, best-effort text decode) for a keyword, not just its name — e.g. any file containing "confidential" → `Private`
+- **File age** — files already older than N days when first organized go to a folder of their own (e.g. `> 90 days old` → `Old Stuff`), independent of the scheduled Archive sweep below
+
+Every rule type can be individually enabled/disabled without deleting it, and previewed against your own already-organized history before saving (regex previews use real pattern matching; content/age rules skip the preview since there's no stored file content or mtime to check against).
+
+## 🔁 Rule Templates — Export / Import
+
+Download your entire rule set (categories, extension/keyword/regex/content/age rules, automation policy) as a JSON file, or upload one — your own backup, or someone else's setup — to replace your current rules in one shot. Entirely client-side plus the existing rules-save endpoint; a malformed or foreign file is rejected by the same schema validation a normal save goes through, with a confirmation dialog before anything is overwritten.
 
 ---
 
@@ -241,6 +257,25 @@ A one-click demo button that drops a small fake file (a genuine, openable genera
 
 - Password hashing (bcrypt), JWT session cookies
 - Rate limiting on login (brute-force protection) and registration (spam protection), per caller IP, with a `Retry-After` response
+- Forgot-password / reset-password flow (emailed reset link, single-use hashed token, expires after a configurable window)
+- **Two-factor authentication (TOTP)** — optional per account. Settings shows a QR code (compatible with Google Authenticator, Authy, etc.) plus the raw secret for manual entry; enabling it issues 8 one-time backup codes (shown once) for recovery if the authenticator app is lost. Once on, login is a two-step exchange: password first, then a short-lived (5-minute) purpose-limited token traded for a real session only after a valid code or unused backup code
+- **Account deletion** — permanently removes the account, its rules, activity history, and stops watching its folder(s); requires re-entering your password to confirm
+- Per-agent-token scoping (see below) so a leaked read-only token can't be used to actually move files
+
+---
+
+## 🖥 Remote Agent — watch your own machine
+
+A downloadable Windows agent (`FileFlowAgentSetup.exe`, from the dashboard's navbar "Downloads" menu) lets FileFlow watch a real folder **on your own computer**, even when the web dashboard itself runs somewhere else — the same rule engine, the same activity log, just reachable over the network instead of only from whatever machine happens to run the backend.
+
+- **Real installer** — per-user install (no admin/UAC prompt), Start Menu + Startup entry, a tray icon (pause/resume watching, reconfigure, open the watched folder, quit), and a clean uninstall that stops the running process first
+- **Auto-update** — the agent checks for a newer version on a schedule, downloads it, verifies its SHA-256 before ever running it, and silently updates + relaunches itself. A single-instance lock (a bound localhost port, no extra dependency) stops a user from ever accidentally running two copies at once
+- **Offline-tolerant** — a local SQLite outbox queues activity reports and command results when the backend is unreachable, with exponential backoff, and replays them once connectivity returns; a file dropped while offline is retried automatically, not silently dropped
+- **Live settings sync** — toggling "Real-time monitoring" on the website pauses/resumes the real agent within one poll cycle. A manual "Pause watching" from the tray and the website's toggle are independent — both have to agree before watching actually resumes
+- **Scoped tokens** — generate a **Full control** token (can watch, organize, and report activity) or a **Read-only** token (can only fetch rules — useful for a monitoring integration that should never be able to touch a file) from Settings
+- Every piece of this was verified against a real installed agent on a real machine, not just unit tests — including a genuine two-version self-update cycle and a real install/uninstall lifecycle
+
+*Current limitation:* the agent watches one folder per install (the [multiple watch folders](#-automatic-watch-folder-monitoring) feature above is currently backend-only); extending the agent itself to watch several folders is a natural follow-up.
 
 ---
 
@@ -327,6 +362,9 @@ This project exists to satisfy the course's requirement to demonstrate the RPA p
 - Axios
 - WebSocket (native browser API, no Socket.IO)
 - Recharts
+- Framer Motion (`motion/react`) — page transitions, entrance/hover animation
+- GSAP (+ ScrollTrigger, Flip, DrawSVG, MotionPath) — pinned scroll sequences, SVG vector animation
+- anime.js — additional vector-path drawing on the landing page
 
 ## Backend
 
@@ -336,6 +374,7 @@ This project exists to satisfy the course's requirement to demonstrate the RPA p
 - Watchdog
 - APScheduler
 - PyJWT + bcrypt (auth)
+- pyotp + qrcode + Pillow (two-factor authentication, QR code generation)
 - pathlib / shutil / hashlib
 - reportlab / openpyxl (PDF / Excel export)
 
@@ -347,10 +386,17 @@ This project exists to satisfy the course's requirement to demonstrate the RPA p
 
 - UiPath Studio / Robot
 
+## Remote Agent (Windows)
+
+- PyInstaller (frozen one-folder build)
+- Inno Setup (per-user installer, no admin/UAC)
+- pystray (system tray icon)
+- SQLite (local offline outbox)
+
 ## Email / Notifications
 
 - Resend (weekly digest)
-- Plyer (desktop notifications)
+- Plyer (desktop notifications, backend and agent alike)
 
 ---
 
@@ -372,18 +418,26 @@ FileFlow/
 │   │   └── App.jsx
 │
 ├── backend/
-│   ├── api/            (routes, auth, rate limiting, websocket)
+│   ├── api/            (routes, auth, 2FA, agent routes, rate limiting, websocket)
 │   ├── automation/      (organizer -- detect/classify/move/undo)
 │   ├── monitor/          (watchdog-based multi-folder watcher)
-│   ├── scheduler/         (archive sweep, weekly digest)
-│   ├── rules/               (per-account rule engine)
+│   ├── scheduler/         (archive sweep, scheduled organize, weekly digest)
+│   ├── rules/               (per-account rule engine + classifier)
 │   ├── database/              (MongoDB connection, id counters)
 │   ├── models/                  (Mongo document wrappers)
-│   ├── services/                  (stats, reports, digest, UiPath)
-│   ├── config/                      (settings, .env loading)
+│   ├── services/                  (stats, reports, digest, UiPath, agent)
+│   ├── config/                      (settings, .env loading, agent release info)
+│   ├── agent_releases/               (published agent installer .exe files)
 │   ├── tests/                        (pytest, real local MongoDB)
 │   ├── main.py
 │   └── requirements.txt
+│
+├── agent/            (downloadable Windows remote agent -- see Remote Agent above)
+│   ├── main.py, watcher.py, commands.py, client.py, outbox.py, updater.py
+│   ├── setup_gui.py, tray.py       (first-run wizard, system tray)
+│   ├── installer/                    (Inno Setup script)
+│   ├── fileflow_agent.spec              (PyInstaller build spec)
+│   └── tests/
 │
 ├── uipath/
 │   ├── FileFlow/         (standalone 5-workflow RPA demo -- course requirement)
@@ -406,6 +460,7 @@ FileFlow/
 - [MongoDB Community Server](https://www.mongodb.com/try/download/community), running locally (`mongodb://localhost:27017` by default)
 - Git
 - *(Optional, for the real UiPath integration)* [UiPath Studio/Robot](https://www.uipath.com/product/studio) (Community edition) and [.NET SDK 8.0](https://dotnet.microsoft.com/download/dotnet/8.0)
+- *(Optional, only to build the remote agent installer yourself, Windows)* [Inno Setup 6](https://jrsoftware.org/isinfo.php) and `pip install pyinstaller`
 
 ## 1. Clone the repository
 
@@ -438,7 +493,23 @@ npm run dev
 
 The dashboard will be available at `http://localhost:5173`. Register an account from there — your watch folder, rules, and dashboard are created automatically and are yours alone.
 
-## 4. Optional: real UiPath Robot integration
+## 4. Optional: the remote agent (Windows)
+
+Easiest path: from the dashboard's navbar, open the **Downloads** menu → **FileFlow Agent (.exe)**, run the installer, and paste in a token generated from Settings → "Generate agent token".
+
+To build it yourself instead (from the repo root, with the backend's venv active):
+
+```bash
+pip install pyinstaller
+pyinstaller agent/fileflow_agent.spec --noconfirm
+iscc agent/installer/fileflow_agent.iss   # requires Inno Setup installed
+```
+
+The resulting installer lands in `agent/installer/Output/`. To publish it so the dashboard serves it and the auto-updater picks it up: bump `agent/VERSION` and the `.iss` file's `AppVersion` together, rebuild, copy the installer into `backend/agent_releases/FileFlowAgentSetup-<version>.exe`, bump `AGENT_LATEST_VERSION` in `backend/config/agent_release.py`, and restart the backend.
+
+To run the agent from source instead of building an installer: `python -m agent.main` from the repo root (needs `agent/config.json` — run `python -m agent.setup` once first, or let it prompt via its GUI wizard on first launch).
+
+## 5. Optional: real UiPath Robot integration
 
 Off by default (`UIPATH_ENABLED=false`). To turn it on:
 
@@ -450,7 +521,7 @@ Off by default (`UIPATH_ENABLED=false`). To turn it on:
    ```
 4. In `backend/.env`, set `UIPATH_ENABLED=true`, `UIPATH_ROBOT_EXE` (path to `UiRobot.exe`), and `UIPATH_PACKAGE_PATH` (path to the `.nupkg` from step 3) — see `.env.example` for the exact shape.
 
-## 5. UiPath standalone demo (course requirement)
+## 6. UiPath standalone demo (course requirement)
 
 Open `uipath/FileFlow/project.json` in UiPath Studio to inspect the 5-workflow pipeline. See [RPA Automation — Current Scope](#-rpa-automation--current-scope) above for its current known issue.
 
@@ -458,24 +529,30 @@ Open `uipath/FileFlow/project.json` in UiPath Studio to inspect the 5-workflow p
 
 # 🕓 Development Progress
 
-Originally built as a single-tenant SQLite app, FileFlow has since gone through a full migration to real multi-tenancy on MongoDB, plus a live RPA integration:
+Originally built as a single-tenant SQLite app, FileFlow has since gone through a full migration to real multi-tenancy on MongoDB, a live RPA integration, a downloadable remote agent, and a round of account-security and automation-rule features:
 
 - **Migrated the entire backend off SQLite/SQLAlchemy onto MongoDB** (`pymongo`), including a from-scratch test suite rewrite against a real local `mongod` (disposable per-test databases, dropped after each test).
 - **Built real per-account data isolation** — separate watch folders, rules, activity logs, and WebSocket delivery per account. This fixed the original bug where a second registered account could see the first account's data.
 - **Added compound MongoDB indexes** (`user_id` + `_id` / `timestamp`) on `activity_log`, matching the app's actual per-account query patterns.
 - **Wired a real UiPath Robot integration**: the physical file-move step can now genuinely be performed by an installed UiPath Robot (verified end-to-end against UiPath's own execution logs), with an automatic, always-safe fallback to a plain Python move if the Robot is ever unavailable.
 - **Added rate limiting** on `/api/auth/login` and `/api/auth/register` (per-IP, with a `Retry-After` response), closing a real brute-force / registration-spam gap.
-- **168 backend tests / 23 frontend tests passing**, verified against real infrastructure (a real MongoDB instance, a real running server, real file drops, real UiPath execution logs) rather than mocks alone.
+- **Added forgot-password / reset-password**, and later **account deletion** and **two-factor authentication (TOTP + backup codes)** — see [Auth Security](#-auth-security).
+- **Built the downloadable Windows remote agent from scratch**, across four phases: (1) a durable local outbox so a dropped connection never loses a pending activity report or command, (2) offline-queue robustness with exponential backoff, (3) a real per-user installer (Inno Setup) with a tray icon and setup wizard, (4) checksum-verified self-updating. Shipped through its own auto-update pipeline multiple times against a real installed agent on a real machine. See [Remote Agent](#-remote-agent--watch-your-own-machine).
+- **Found and fixed a genuine double-processing bug**: the backend's own local watcher never checked whether a remote agent was already covering an account's folder, so a file could be organized once by each, with the loser reporting a confusing false "duplicate". Fixed by having the local watcher defer to a connected agent, same as undo/reclassify/organize-existing already did.
+- **Added scheduled nightly organizing, multiple watch folders per account, regex/content/file-age rule types, and rule template export/import** — see the feature sections above.
+- Replaced a from-scratch task backlog with genuine end-to-end verification for each of the above: real accounts, real files on disk, real HTTP round trips against the live server (not just the test suite) — this is also how a handful of real bugs were caught that the test suite alone missed (a FastAPI default-value quirk that silently dropped a request body field; a browser caching an installer download and never re-fetching a newer one).
+- **334 tests passing** (283 backend, 24 agent, 27 frontend), verified against real infrastructure (a real MongoDB instance, a real running server, real file drops, a real installed Windows agent, real UiPath execution logs) rather than mocks alone.
 
 ## Known issues / not yet done
 
-- **No git repository yet** — the single biggest risk right now; none of the above has version control or backup.
 - `uipath/FileFlow/Main.xaml` fails to pack/compile (see [RPA Automation — Current Scope](#-rpa-automation--current-scope)).
-- No password reset / email verification flow.
 - No CI, no Docker/deployment setup.
 - `secure=False` on the session cookie needs flipping before any real HTTPS deployment.
-- No pagination on Activity Log (capped at 500 rows); no bulk actions; no account deletion/data export.
-- Frontend dark mode covers the marketing pages only, not the authenticated app; ~935KB JS bundle, not code-split.
+- The remote agent installer is unsigned — Windows SmartScreen/antivirus may flag it; code signing is a paid certificate, out of scope for now.
+- The remote agent watches one folder per install; the multiple-watch-folders feature is currently backend-only.
+- Multiple watch folders share one rule set per account — independent rules per folder would be a larger, separate change.
+- No pagination on Activity Log (capped at 500 rows); no bulk actions; no data export beyond the existing CSV/Excel/PDF reports.
+- Frontend dark mode covers the marketing pages only, not the authenticated app; JS bundle isn't code-split (~1.2MB).
 
 ---
 
@@ -508,6 +585,15 @@ _Screenshots of the dashboard and automation in action will be added here. See `
 - Cloud backup
 - Cross-platform support (Windows, Linux, macOS)
 
+## Automation, specifically
+
+- **Independent rules per watch folder** — right now every folder on an account shares one rule set; letting each folder define its own would make e.g. a "Downloads" folder and a "Screenshots" folder behave completely differently
+- **Multi-folder support in the remote agent** — the backend already watches several folders per account; the downloadable agent still only watches one per install
+- **Chained / conditional rules** — actions that trigger off another rule's result (e.g. "anything filed under Finance Folder that's also over 90 days old → also move to a Tax Archive"), instead of every rule being evaluated independently against the original file
+- **Webhook / Slack / Discord actions** — send an automation event somewhere other than the desktop toast or weekly email digest, e.g. "post to a channel whenever a large file lands"
+- **Bulk automation actions** — undo or reclassify more than one Activity Log entry at a time, instead of one at a time
+- **Code-signed, auto-updating installer** — remove the current SmartScreen/antivirus friction on first install without giving up the checksum-verified auto-update pipeline already in place
+
 ---
 
 # 📚 Learning Outcomes
@@ -527,7 +613,8 @@ This project demonstrates:
 - Desktop Notifications
 - Report Generation
 - WebSocket Communication
-- Auth Security (rate limiting, session management)
+- Auth Security (rate limiting, session management, two-factor authentication)
+- Desktop Application Packaging & Auto-Update (PyInstaller, Inno Setup)
 
 ---
 

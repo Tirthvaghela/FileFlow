@@ -16,6 +16,16 @@ uipath/.packages/
 .env
 backend/.env
 frontend/.env
+# Holds a real long-lived agent bearer token -- never committed.
+agent/config.json
+# This machine's own local agent state -- never something to commit.
+agent/agent_queue.db
+agent/rules_cache.json
+# PyInstaller/Inno Setup build output -- regenerated from source, not
+# something to track in git.
+build/
+dist/
+agent/installer/Output/
 
 # Runtime data
 database/*.db

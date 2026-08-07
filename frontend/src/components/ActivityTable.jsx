@@ -1,3 +1,5 @@
+import { Activity } from "lucide-react";
+import EmptyState from "./EmptyState.jsx";
 import { categoryBadge } from "../utils/categoryMeta.js";
 
 const ACTION_META = {
@@ -35,7 +37,7 @@ function relativeTime(iso) {
 
 function FileBadge({ log }) {
   const meta = ACTION_META[log.action] || { color: "var(--text-muted)" };
-  const color = meta.color === "var(--text-muted)" ? "var(--series-1)" : "var(--series-1)";
+  const color = meta.color;
   return (
     <span
       className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[9px] font-bold tracking-wide"
@@ -49,15 +51,17 @@ function FileBadge({ log }) {
 export default function ActivityTable({
   logs,
   onUndo,
+  undoing = false,
   showStatusBadge = false,
   onReclassify,
   categories = [],
 }) {
   if (!logs.length) {
     return (
-      <p className="py-8 text-center text-sm text-[var(--text-muted)]">
-        No activity yet — drop a file into the watched folder to see it here.
-      </p>
+      <EmptyState
+        icon={Activity}
+        message="No activity yet — drop a file into the watched folder to see it here."
+      />
     );
   }
 
@@ -97,9 +101,10 @@ export default function ActivityTable({
             {onUndo && i === 0 && !log.undone && (
               <button
                 onClick={() => onUndo(log)}
-                className="rounded-md border border-[var(--border)] px-2.5 py-1 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--gridline)]"
+                disabled={undoing}
+                className="rounded-md border border-[var(--border)] px-2.5 py-1 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--gridline)] disabled:opacity-50"
               >
-                Undo
+                {undoing ? "Undoing…" : "Undo"}
               </button>
             )}
             {!showStatusBadge && !onUndo && (

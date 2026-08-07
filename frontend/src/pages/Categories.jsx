@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion } from "motion/react";
+import { FolderOpen } from "lucide-react";
 import Header from "../components/Header.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import { getCategories } from "../services/api.js";
@@ -31,7 +32,10 @@ export default function Categories() {
       <Header title="Categories" subtitle="Files sorted into smart folders" />
       <div className="p-8">
         {categories.length === 0 ? (
-          <EmptyState message="No files organized yet — categories will appear here once FileFlow moves something." />
+          <EmptyState
+            icon={FolderOpen}
+            message="No files organized yet — categories will appear here once FileFlow moves something."
+          />
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {categories.map((cat, i) => {

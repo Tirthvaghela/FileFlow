@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 
 from automation import organizer
@@ -9,7 +10,9 @@ from automation.organizer import (
     reclassify_file,
     resolve_destination,
     undo_last_operation,
+    wait_for_stable_file,
 )
+from config.settings import settings
 from models.models import Document
 
 
@@ -18,13 +21,53 @@ def _write(path: Path, content: str) -> Path:
     return path
 
 
+class TestWaitForStableFile:
+    def test_true_once_size_stops_changing_between_polls(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(settings, "STABILITY_POLL_INTERVAL", 0.01)
+        monkeypatch.setattr(settings, "STABILITY_TIMEOUT", 1.0)
+        path = _write(tmp_path / "steady.txt", "hello")
+
+        assert wait_for_stable_file(path) is True
+
+    def test_false_when_the_file_never_existed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(settings, "STABILITY_POLL_INTERVAL", 0.01)
+        monkeypatch.setattr(settings, "STABILITY_TIMEOUT", 0.05)
+
+        assert wait_for_stable_file(tmp_path / "never_created.txt") is False
+
+    def test_false_for_a_file_still_growing_on_every_poll_at_the_timeout(self, tmp_path, monkeypatch):
+        # A file that changes size on every single poll (e.g. a slow trickle
+        # download) must NOT be treated as "stable" just because it's still
+        # sitting there when the timeout hits -- that would mean moving and
+        # hashing a file that's still being written to.
+        monkeypatch.setattr(settings, "STABILITY_POLL_INTERVAL", 0.01)
+        monkeypatch.setattr(settings, "STABILITY_TIMEOUT", 0.05)
+        path = _write(tmp_path / "growing.txt", "x")
+
+        # pathlib.Path uses __slots__, so instance-level patching isn't
+        # possible -- patch the class method but pass every other path
+        # (including pytest's own internal Path.stat() calls) straight
+        # through to the real implementation untouched.
+        original_stat = Path.stat
+        sizes = iter(range(1, 1000))
+
+        def fake_stat(self, *args, **kwargs):
+            if self == path:
+                return type("FakeStat", (), {"st_size": next(sizes)})()
+            return original_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", fake_stat)
+
+        assert wait_for_stable_file(path) is False
+
+
 class TestResolveDestination:
     def test_returns_moved_when_destination_is_free(self, tmp_path, test_engine):
         dest_folder = tmp_path / "Documents"
         dest_folder.mkdir()
         source = _write(tmp_path / "a.txt", "hello")
 
-        dest_path, action = resolve_destination(dest_folder, "a.txt", source, test_engine)
+        dest_path, action = resolve_destination(dest_folder, "a.txt", source, test_engine.rules)
 
         assert action == "moved"
         assert dest_path == dest_folder / "a.txt"
@@ -35,7 +78,7 @@ class TestResolveDestination:
         _write(dest_folder / "a.txt", "hello")
         source = _write(tmp_path / "a.txt", "hello")
 
-        dest_path, action = resolve_destination(dest_folder, "a.txt", source, test_engine)
+        dest_path, action = resolve_destination(dest_folder, "a.txt", source, test_engine.rules)
 
         assert action == "duplicate_skipped"
         assert dest_path is None
@@ -46,7 +89,7 @@ class TestResolveDestination:
         _write(dest_folder / "a.txt", "existing content")
         source = _write(tmp_path / "a.txt", "different content")
 
-        dest_path, action = resolve_destination(dest_folder, "a.txt", source, test_engine)
+        dest_path, action = resolve_destination(dest_folder, "a.txt", source, test_engine.rules)
 
         assert action == "renamed_and_moved"
         assert dest_path == dest_folder / "a (1).txt"
@@ -58,7 +101,7 @@ class TestResolveDestination:
         _write(dest_folder / "a (1).txt", "existing-1")
         source = _write(tmp_path / "a.txt", "new content")
 
-        dest_path, action = resolve_destination(dest_folder, "a.txt", source, test_engine)
+        dest_path, action = resolve_destination(dest_folder, "a.txt", source, test_engine.rules)
 
         assert action == "renamed_and_moved"
         assert dest_path == dest_folder / "a (2).txt"
@@ -190,13 +233,13 @@ class TestProcessFileUiPathWiring:
 
 class TestBuildFinalName:
     def test_unchanged_when_timestamp_rename_disabled(self, test_rules, test_engine):
-        assert build_final_name("photo.jpg", "Images", test_engine) == "photo.jpg"
+        assert build_final_name("photo.jpg", "Images", test_engine.rules) == "photo.jpg"
 
     def test_gets_timestamp_prefix_when_enabled_for_category(self, test_rules, test_engine):
         test_rules["enable_timestamp_rename"] = True
         test_rules["timestamp_rename_categories"] = ["Images"]
 
-        name = build_final_name("photo.jpg", "Images", test_engine)
+        name = build_final_name("photo.jpg", "Images", test_engine.rules)
 
         assert name != "photo.jpg"
         assert name.endswith("_photo.jpg")
@@ -205,7 +248,7 @@ class TestBuildFinalName:
         test_rules["enable_timestamp_rename"] = True
         test_rules["timestamp_rename_categories"] = ["Images"]
 
-        assert build_final_name("notes.txt", "Documents", test_engine) == "notes.txt"
+        assert build_final_name("notes.txt", "Documents", test_engine.rules) == "notes.txt"
 
 
 class TestOrganizeExistingFiles:
@@ -286,6 +329,36 @@ class TestUndoLastOperation:
         assert success is False
         assert "already exists" in message
 
+    def test_two_concurrent_undo_calls_never_raise_and_only_one_succeeds(
+        self, watch_folder, test_rules, db_session, test_user
+    ):
+        # A double-click, or a slow request plus an impatient retry, used
+        # to let both calls read the same undone=False row, both pass the
+        # exists() checks, and race shutil.move() on the same file -- the
+        # loser raised straight out of the function as an unhandled 500.
+        source = _write(watch_folder / "notes.txt", "hi")
+        process_file(source, db_session, test_user)
+
+        results = []
+        errors = []
+
+        def worker():
+            try:
+                results.append(undo_last_operation(db_session, test_user))
+            except Exception as exc:  # noqa: BLE001 -- captured for the assertion below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert errors == [], f"undo_last_operation raised under concurrency: {errors}"
+        successes = [r for r in results if r[0] is True]
+        assert len(successes) == 1
+        assert Path(watch_folder / "notes.txt").exists()
+
     def test_undo_walks_past_duplicate_skipped_entries_in_history(
         self, watch_folder, test_rules, db_session, test_user
     ):
@@ -363,6 +436,38 @@ class TestReclassifyFile:
 
         assert success is False
         assert result is None
+
+    def test_two_concurrent_reclassify_calls_for_the_same_entry_never_raise(
+        self, watch_folder, test_rules, db_session, test_user
+    ):
+        # Same class of race as undo: two calls reclassifying the same
+        # log_id at once used to both pass the source.exists() check and
+        # race shutil.move() on the same file -- the loser raised an
+        # unhandled OSError instead of a graceful failure response.
+        source = _write(watch_folder / "notes.txt", "hi")
+        original_log = process_file(source, db_session, test_user)
+
+        results = []
+        errors = []
+
+        def worker():
+            try:
+                results.append(
+                    reclassify_file(original_log.id, "Design", db_session, test_user)
+                )
+            except Exception as exc:  # noqa: BLE001 -- captured for the assertion below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert errors == [], f"reclassify_file raised under concurrency: {errors}"
+        successes = [r for r in results if r[0] is True]
+        assert len(successes) == 1
+        assert (watch_folder / "Design" / "notes.txt").exists()
 
     def test_rejects_a_category_that_would_escape_the_watch_folder(
         self, watch_folder, test_rules, db_session, test_user

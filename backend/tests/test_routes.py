@@ -164,6 +164,28 @@ class TestRules:
         get_resp = client.get("/api/rules")
         assert get_resp.json()["archive_after_days"] == 45
 
+    def test_put_rules_rejects_an_uncompilable_regex_pattern(self, client, test_rules):
+        payload = {**test_rules, "regex_rules": [{"pattern": "[unclosed", "folder": "Camera"}]}
+
+        resp = client.put("/api/rules", json=payload)
+
+        assert resp.status_code == 422
+
+    def test_put_rules_accepts_a_valid_regex_pattern(self, client, test_rules):
+        payload = {**test_rules, "regex_rules": [{"pattern": r"^IMG_\d+", "folder": "Camera"}]}
+
+        resp = client.put("/api/rules", json=payload)
+
+        assert resp.status_code == 200
+        assert resp.json()["regex_rules"] == [{"pattern": r"^IMG_\d+", "folder": "Camera"}]
+
+    def test_put_rules_rejects_a_negative_date_rule_threshold(self, client, test_rules):
+        payload = {**test_rules, "date_rules": [{"older_than_days": -5, "folder": "Old Stuff"}]}
+
+        resp = client.put("/api/rules", json=payload)
+
+        assert resp.status_code == 422
+
     def test_put_rules_never_touches_the_real_rules_json_file(self, client, test_rules):
         before = settings.RULES_CONFIG_PATH.read_text(encoding="utf-8")
 
@@ -253,15 +275,40 @@ class TestOrganizeExisting:
         assert (watch_folder / "Documents" / "notes.txt").exists()
         assert (watch_folder / "Python Projects" / "script.py").exists()
 
+    def test_sweeps_additional_watch_folders_too(self, client, watch_folder, tmp_path):
+        extra = tmp_path / "extra_watch_folder"
+        add_resp = client.post("/api/settings/watch-folders", json={"path": str(extra)})
+        assert add_resp.status_code == 200
 
-class TestSimulateDownload:
-    def test_creates_a_real_file_in_the_watch_folder(self, client, watch_folder):
-        resp = client.post("/api/simulate-download")
+        (watch_folder / "notes.txt").write_text("hi")
+        (extra / "script.py").write_text("print(1)")
+
+        resp = client.post("/api/organize-existing")
 
         assert resp.status_code == 200
         body = resp.json()
-        assert body["filename"]
-        assert (watch_folder / body["filename"]).exists()
+        assert body["scanned"] == 2
+        assert body["organized"] == 2
+        # Each file lands relative to its OWN folder, not the primary --
+        # script.py must not end up nested under the primary watch_folder.
+        assert (watch_folder / "Documents" / "notes.txt").exists()
+        assert (extra / "Python Projects" / "script.py").exists()
+
+
+class TestSimulateDownload:
+    def test_serves_a_real_downloadable_file(self, client, watch_folder):
+        resp = client.get("/api/simulate-download")
+
+        assert resp.status_code == 200
+        assert resp.content
+        disposition = resp.headers["content-disposition"]
+        assert disposition.startswith("attachment; filename=FileFlow_Demo_")
+        # The whole point is that the backend no longer writes into the
+        # watch folder itself -- the browser's own download is what lands
+        # there for the already-running watcher to pick up. (Registration
+        # already creates the user's own watch subfolder, so check for
+        # files, not just an empty directory.)
+        assert [p for p in watch_folder.rglob("*") if p.is_file()] == []
 
 
 class TestWeeklyReports:
@@ -276,8 +323,9 @@ class TestWeeklyReports:
 
 
 class TestSendDigest:
-    def test_reports_skipped_when_resend_is_not_configured(self, client, monkeypatch):
-        monkeypatch.setattr(settings, "RESEND_API_KEY", None)
+    def test_reports_skipped_when_smtp_is_not_configured(self, client, monkeypatch):
+        monkeypatch.setattr(settings, "SMTP_USERNAME", None)
+        monkeypatch.setattr(settings, "SMTP_PASSWORD", None)
 
         resp = client.post("/api/reports/send-digest")
 
@@ -286,7 +334,8 @@ class TestSendDigest:
         assert body["success"] is False
 
     def test_reports_success_when_the_send_succeeds(self, client, monkeypatch):
-        monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test_key")
+        monkeypatch.setattr(settings, "SMTP_USERNAME", "someone@gmail.com")
+        monkeypatch.setattr(settings, "SMTP_PASSWORD", "app-password")
         monkeypatch.setattr("api.routes.send_weekly_digest", lambda db, user: True)
 
         resp = client.post("/api/reports/send-digest")
@@ -296,7 +345,8 @@ class TestSendDigest:
         assert body["success"] is True
 
     def test_reports_failure_when_the_send_fails(self, client, monkeypatch):
-        monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test_key")
+        monkeypatch.setattr(settings, "SMTP_USERNAME", "someone@gmail.com")
+        monkeypatch.setattr(settings, "SMTP_PASSWORD", "app-password")
         monkeypatch.setattr("api.routes.send_weekly_digest", lambda db, user: False)
 
         resp = client.post("/api/reports/send-digest")
@@ -325,6 +375,30 @@ class TestReportExports:
         resp = client.get("/api/reports/pdf")
         assert resp.status_code == 200
         assert resp.content.startswith(b"%PDF")
+
+
+class TestOnboardingTemplates:
+    def test_lists_all_four_starter_templates(self, client):
+        resp = client.get("/api/onboarding/templates")
+
+        assert resp.status_code == 200
+        ids = {t["id"] for t in resp.json()}
+        assert ids == {"general", "student", "developer", "photographer"}
+
+    def test_applying_a_template_overwrites_the_users_rules(self, client):
+        resp = client.post("/api/onboarding/templates/developer/apply")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["extension_rules"][".py"] == "Python Projects"
+        assert body["extension_rules"][".ipynb"] == "Notebooks"
+
+        get_resp = client.get("/api/rules")
+        assert get_resp.json()["extension_rules"][".sql"] == "SQL Scripts"
+
+    def test_unknown_template_id_404s(self, client):
+        resp = client.post("/api/onboarding/templates/not-a-real-template/apply")
+        assert resp.status_code == 404
 
 
 class TestWebSocket:

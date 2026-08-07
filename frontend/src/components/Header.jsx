@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Bell, Download, FileText, Search, SlidersHorizontal } from "lucide-react";
-import { getLogs, simulateDownload } from "../services/api.js";
+import { AnimatePresence, motion } from "motion/react";
+import { Bell, ChevronDown, Download, FileText, Search, SlidersHorizontal } from "lucide-react";
+import { agentInstallerUrl, getLogs, simulateDownloadUrl } from "../services/api.js";
 import { useRules } from "../context/RulesContext.jsx";
 import { useLiveLogs } from "../hooks/useLiveLogs.js";
 import { buildCategoryColorMap, categoryBadge } from "../utils/categoryMeta.js";
@@ -67,16 +68,17 @@ export default function Header({ title, subtitle }) {
   // Header owns its own live connection so the bell/status dot is accurate
   // on every page, not just the ones that happen to render an activity feed.
   const { logs: notifLogs, connected } = useLiveLogs(20);
-  const [simulating, setSimulating] = useState(false);
   const [toast, setToast] = useState("");
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [logs, setLogs] = useState([]);
   const [logsLoaded, setLogsLoaded] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [downloadOpen, setDownloadOpen] = useState(false);
   const [lastSeenId, setLastSeenId] = useState(null);
   const wrapRef = useRef(null);
   const notifRef = useRef(null);
+  const downloadRef = useRef(null);
 
   useEffect(() => {
     function handleClickOutside(e) {
@@ -85,6 +87,9 @@ export default function Header({ title, subtitle }) {
       }
       if (notifRef.current && !notifRef.current.contains(e.target)) {
         setNotifOpen(false);
+      }
+      if (downloadRef.current && !downloadRef.current.contains(e.target)) {
+        setDownloadOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
@@ -140,15 +145,31 @@ export default function Header({ title, subtitle }) {
     navigate(path);
   }
 
-  async function handleSimulate() {
-    setSimulating(true);
-    try {
-      const result = await simulateDownload();
-      setToast(result.message);
-      setTimeout(() => setToast(""), 4000);
-    } finally {
-      setSimulating(false);
-    }
+  function handleSimulate() {
+    // A genuine browser download (not a JSON call) -- it lands wherever
+    // the browser saves downloads, typically the same folder FileFlow is
+    // already watching, so the real pipeline picks it up naturally.
+    const link = document.createElement("a");
+    link.href = simulateDownloadUrl();
+    link.rel = "noopener";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setToast("Demo file downloading — FileFlow will pick it up once it lands.");
+    setTimeout(() => setToast(""), 4000);
+  }
+
+  function handleAgentDownload() {
+    // Same genuine-browser-download pattern as handleSimulate, just
+    // pointed at the real installer instead of a demo file.
+    const link = document.createElement("a");
+    link.href = agentInstallerUrl();
+    link.rel = "noopener";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setToast("Downloading FileFlow Agent — run the installer once it lands.");
+    setTimeout(() => setToast(""), 4000);
   }
 
   return (
@@ -194,11 +215,19 @@ export default function Header({ title, subtitle }) {
               }
             }}
             placeholder="Search files, rules..."
-            className="w-56 rounded-lg border border-[var(--border)] bg-[var(--surface-1)] py-2 pl-9 pr-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--series-1)]/30"
+            className="w-56 rounded-lg border border-[var(--border)] bg-[var(--surface-1)] py-2 pl-9 pr-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/30"
           />
 
+          <AnimatePresence>
           {open && query.trim() && (
-            <div className="absolute right-0 top-[calc(100%+6px)] z-20 w-80 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-1)] shadow-lg">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: -4 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: -4 }}
+              transition={{ duration: 0.15, ease: "easeOut" }}
+              style={{ transformOrigin: "top right" }}
+              className="absolute right-0 top-[calc(100%+6px)] z-20 w-80 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-1)] shadow-lg"
+            >
               {!hasResults ? (
                 <p className="px-4 py-6 text-center text-xs text-[var(--text-muted)]">
                   No matches for "{query.trim()}"
@@ -243,18 +272,63 @@ export default function Header({ title, subtitle }) {
                   )}
                 </>
               )}
-            </div>
+            </motion.div>
           )}
+          </AnimatePresence>
         </div>
 
-        <button
-          onClick={handleSimulate}
-          disabled={simulating}
-          className="flex items-center gap-2 rounded-lg bg-[var(--series-1)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-60"
-        >
-          <Download width={16} height={16} />
-          {simulating ? "Simulating…" : "Simulate download"}
-        </button>
+        <div ref={downloadRef} className="relative">
+          <button
+            onClick={() => setDownloadOpen((v) => !v)}
+            className="flex items-center gap-2 rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-medium text-[var(--brand-foreground)] hover:opacity-90"
+          >
+            <Download width={16} height={16} />
+            Downloads
+            <ChevronDown width={14} height={14} />
+          </button>
+
+          <AnimatePresence>
+          {downloadOpen && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: -4 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: -4 }}
+              transition={{ duration: 0.15, ease: "easeOut" }}
+              style={{ transformOrigin: "top right" }}
+              className="absolute right-0 top-[calc(100%+6px)] z-20 w-72 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-1)] shadow-lg"
+            >
+              <button
+                onClick={() => {
+                  setDownloadOpen(false);
+                  handleSimulate();
+                }}
+                className="flex w-full flex-col items-start gap-0.5 px-4 py-2.5 text-left hover:bg-[var(--gridline)]"
+              >
+                <span className="text-sm font-medium text-[var(--text-primary)]">
+                  Simulate a download
+                </span>
+                <span className="text-xs text-[var(--text-muted)]">
+                  Drop a demo file to test the pipeline
+                </span>
+              </button>
+              <button
+                onClick={() => {
+                  setDownloadOpen(false);
+                  handleAgentDownload();
+                }}
+                className="flex w-full flex-col items-start gap-0.5 border-t border-[var(--border)] px-4 py-2.5 text-left hover:bg-[var(--gridline)]"
+              >
+                <span className="text-sm font-medium text-[var(--text-primary)]">
+                  FileFlow Agent (.exe)
+                </span>
+                <span className="text-xs text-[var(--text-muted)]">
+                  Windows installer — watches your own machine's folder
+                </span>
+              </button>
+            </motion.div>
+          )}
+          </AnimatePresence>
+        </div>
 
         <div ref={notifRef} className="relative">
           <button
@@ -275,8 +349,16 @@ export default function Header({ title, subtitle }) {
             )}
           </button>
 
+          <AnimatePresence>
           {notifOpen && (
-            <div className="absolute right-0 top-[calc(100%+6px)] z-20 w-80 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-1)] shadow-lg">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: -4 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: -4 }}
+              transition={{ duration: 0.15, ease: "easeOut" }}
+              style={{ transformOrigin: "top right" }}
+              className="absolute right-0 top-[calc(100%+6px)] z-20 w-80 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-1)] shadow-lg"
+            >
               <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
                 <span className="text-sm font-semibold text-[var(--text-primary)]">
                   Notifications
@@ -332,12 +414,13 @@ export default function Header({ title, subtitle }) {
                   setNotifOpen(false);
                   navigate("/app/activity");
                 }}
-                className="block w-full border-t border-[var(--border)] py-2 text-center text-xs font-medium text-[var(--series-1)] hover:bg-[var(--gridline)]"
+                className="block w-full border-t border-[var(--border)] py-2 text-center text-xs font-medium text-[var(--brand)] hover:bg-[var(--gridline)]"
               >
                 View all activity
               </button>
-            </div>
+            </motion.div>
           )}
+          </AnimatePresence>
         </div>
       </div>
     </header>

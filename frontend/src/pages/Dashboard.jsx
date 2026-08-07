@@ -7,8 +7,10 @@ import StatCard from "../components/StatCard.jsx";
 import CategoryDonut from "../components/CategoryDonut.jsx";
 import WeeklyChart from "../components/WeeklyChart.jsx";
 import ActivityTable from "../components/ActivityTable.jsx";
+import PipelineFlow from "../components/PipelineFlow.jsx";
 import { useLiveLogs } from "../hooks/useLiveLogs.js";
 import TiltCard from "../components/ui/TiltCard.jsx";
+import ConfirmDialog from "../components/ui/ConfirmDialog.jsx";
 import {
   getStats,
   getWeeklyReports,
@@ -20,8 +22,6 @@ import { collectKnownFolders, formatBytes } from "../utils/categoryMeta.js";
 import { useRules } from "../context/RulesContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 
-const PIPELINE_STEPS = ["Detected", "Classified", "Duplicate check", "Moved", "Logged"];
-
 export default function Dashboard() {
   const { logs, refresh } = useLiveLogs(6);
   const { rules } = useRules();
@@ -32,6 +32,8 @@ export default function Dashboard() {
   const [organizing, setOrganizing] = useState(false);
   const [organizeResult, setOrganizeResult] = useState(null);
   const [thisWeek, setThisWeek] = useState(null);
+  const [confirmOrganize, setConfirmOrganize] = useState(false);
+  const [undoing, setUndoing] = useState(false);
 
   function loadStats() {
     getStats()
@@ -52,10 +54,20 @@ export default function Dashboard() {
   }, [logs[0]?.id]);
 
   async function handleUndo() {
-    const result = await undoLastOperation();
-    setActionMessage(result.message);
-    refresh();
-    loadStats();
+    // The backend only guards against two calls racing on the *same* undo
+    // -- it doesn't know a fast double-click was meant as one undo, not
+    // two, so an unguarded second call here would undo the next operation
+    // back too. Ignore any click that lands while the first is in flight.
+    if (undoing) return;
+    setUndoing(true);
+    try {
+      const result = await undoLastOperation();
+      setActionMessage(result.message);
+      refresh();
+      loadStats();
+    } finally {
+      setUndoing(false);
+    }
   }
 
   async function handleReclassify(log, category) {
@@ -65,12 +77,7 @@ export default function Dashboard() {
     loadStats();
   }
 
-  async function handleOrganizeExisting() {
-    const confirmed = window.confirm(
-      "This scans every file currently sitting loose in the watch folder root and organizes them right now, using your current rules. It affects real files immediately. Continue?",
-    );
-    if (!confirmed) return;
-
+  async function runOrganizeExisting() {
     setOrganizing(true);
     setOrganizeResult(null);
     try {
@@ -150,22 +157,7 @@ export default function Dashboard() {
               </div>
             </div>
           </div>
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            {PIPELINE_STEPS.map((step, i) => (
-              <span key={step} className="flex items-center gap-2">
-                <span className="flex items-center gap-1.5 rounded-full bg-[var(--gridline)]/50 border border-[var(--border)] px-3 py-1 text-xs text-[var(--text-secondary)]">
-                  <span
-                    className="h-1.5 w-1.5 rounded-full"
-                    style={{ background: running ? "var(--status-good)" : "var(--text-muted)" }}
-                  />
-                  {step}
-                </span>
-                {i < PIPELINE_STEPS.length - 1 && (
-                  <span className="text-[var(--text-muted)]">→</span>
-                )}
-              </span>
-            ))}
-          </div>
+          <PipelineFlow running={running} />
         </motion.div>
 
         {/* Stats Grid */}
@@ -236,14 +228,19 @@ export default function Dashboard() {
             <motion.button
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
-              onClick={handleOrganizeExisting}
+              onClick={() => setConfirmOrganize(true)}
               disabled={organizing}
-              className="shrink-0 rounded-md border border-[var(--border)] bg-[var(--surface-1)] hover:bg-[var(--gridline)]/50 hover:border-[var(--series-1)]/30 px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] transition-all cursor-pointer disabled:opacity-50"
+              className="shrink-0 rounded-md border border-[var(--border)] bg-[var(--surface-1)] hover:bg-[var(--gridline)]/50 hover:border-[var(--brand)]/30 px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] transition-all cursor-pointer disabled:opacity-50"
             >
               {organizing ? "Organizing…" : "Organize existing files now"}
             </motion.button>
           </div>
-          {organizeResult && (
+          {organizeResult && organizeResult.queued && (
+            <p className="mt-3 text-xs text-[var(--text-secondary)]">
+              Queued — your agent will pick this up shortly.
+            </p>
+          )}
+          {organizeResult && !organizeResult.queued && (
             <p className="mt-3 text-xs text-[var(--text-secondary)]">
               Scanned {organizeResult.scanned} file(s) — {organizeResult.organized}{" "}
               organized, {organizeResult.duplicates} duplicate(s) skipped
@@ -288,7 +285,7 @@ export default function Dashboard() {
               </h2>
               <Link
                 to="/app/activity"
-                className="text-xs font-medium text-[var(--series-1)] hover:underline"
+                className="text-xs font-medium text-[var(--brand)] hover:underline"
               >
                 View all
               </Link>
@@ -299,6 +296,7 @@ export default function Dashboard() {
             <ActivityTable
               logs={logs}
               onUndo={handleUndo}
+              undoing={undoing}
               onReclassify={handleReclassify}
               categories={knownFolders}
             />
@@ -315,9 +313,9 @@ export default function Dashboard() {
               {rules?.keyword_rules.map((r) => (
                 <span
                   key={r.keyword}
-                  className="flex items-center gap-1.5 rounded-full border border-[var(--border)] hover:border-[var(--series-1)]/40 px-3 py-1 text-xs text-[var(--text-secondary)] transition-colors cursor-default"
+                  className="flex items-center gap-1.5 rounded-full border border-[var(--border)] hover:border-[var(--brand)]/40 px-3 py-1 text-xs text-[var(--text-secondary)] transition-colors cursor-default"
                 >
-                  <span className="font-semibold text-[var(--series-1)]">{r.keyword}</span>
+                  <span className="font-semibold text-[var(--brand)]">{r.keyword}</span>
                   <span className="text-[var(--text-muted)]">→</span>
                   {r.folder}
                 </span>
@@ -326,9 +324,9 @@ export default function Dashboard() {
                 Object.entries(rules.extension_rules).map(([ext, folder]) => (
                   <span
                     key={ext}
-                    className="flex items-center gap-1.5 rounded-full border border-[var(--border)] hover:border-[var(--series-1)]/40 px-3 py-1 text-xs text-[var(--text-secondary)] transition-colors cursor-default"
+                    className="flex items-center gap-1.5 rounded-full border border-[var(--border)] hover:border-[var(--brand)]/40 px-3 py-1 text-xs text-[var(--text-secondary)] transition-colors cursor-default"
                   >
-                    <span className="font-semibold text-[var(--series-1)]">{ext}</span>
+                    <span className="font-semibold text-[var(--brand)]">{ext}</span>
                     <span className="text-[var(--text-muted)]">→</span>
                     {folder}
                   </span>
@@ -352,6 +350,15 @@ export default function Dashboard() {
           </motion.div>
         </div>
       </motion.div>
+
+      <ConfirmDialog
+        open={confirmOrganize}
+        onOpenChange={setConfirmOrganize}
+        title="Organize existing files now?"
+        description="This scans every file currently sitting loose in the watch folder root and organizes them right now, using your current rules. It affects real files immediately."
+        confirmLabel="Organize now"
+        onConfirm={runOrganizeExisting}
+      />
     </>
   );
 }

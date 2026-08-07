@@ -168,3 +168,99 @@ def test_save_persists_and_reload_reads_it_back(db_session, tmp_path):
 
     reloaded = RuleEngine(db_session, doc_id=DOC_ID, watch_root=tmp_path)
     assert reloaded.archive_after_days == 7
+
+
+class TestRegexRules:
+    def test_matches_a_pattern_against_the_filename(self, engine):
+        engine.rules["regex_rules"] = [{"pattern": r"^IMG_\d+", "folder": "Camera"}]
+        assert engine.classify("IMG_2024.jpg", 100) == "Camera"
+
+    def test_a_non_matching_pattern_falls_through_to_normal_classification(self, engine):
+        engine.rules["regex_rules"] = [{"pattern": r"^IMG_\d+", "folder": "Camera"}]
+        assert engine.classify("report.pdf", 100) == "Documents"
+
+    def test_an_invalid_pattern_is_skipped_rather_than_raising(self, engine):
+        # RulesOut validates patterns at the API boundary, but classify()
+        # itself must stay defensive -- a bad pattern must never take down
+        # every file being organized, it should just never match.
+        engine.rules["regex_rules"] = [{"pattern": "[unclosed", "folder": "Camera"}]
+        assert engine.classify("report.pdf", 100) == "Documents"
+
+    def test_keyword_rules_still_win_over_regex_rules(self, engine):
+        engine.rules["regex_rules"] = [{"pattern": r"\.pdf$", "folder": "PDF Dump"}]
+        # "invoice" keyword rule already exists in the base RULES fixture.
+        assert engine.classify("invoice_march.pdf", 100) == "Finance Folder"
+
+
+class TestContentKeywordRules:
+    def test_matches_a_keyword_found_inside_the_file(self, engine, watch_folder):
+        engine.rules["content_keyword_rules"] = [{"keyword": "confidential", "folder": "Private"}]
+        target = watch_folder / "notes.txt"
+        target.write_text("This document is CONFIDENTIAL -- do not share.")
+
+        assert engine.classify("notes.txt", 100, file_path=target) == "Private"
+
+    def test_never_matches_without_a_real_file_path(self, engine, watch_folder):
+        # Callers that only have a bare filename (a dry-run preview, older
+        # code paths) can't offer file content -- the rule must be a no-op
+        # rather than erroring, falling through to normal classification.
+        engine.rules["content_keyword_rules"] = [{"keyword": "confidential", "folder": "Private"}]
+        assert engine.classify("notes.txt", 100) == "Documents"
+
+    def test_a_file_without_the_keyword_falls_through(self, engine, watch_folder):
+        engine.rules["content_keyword_rules"] = [{"keyword": "confidential", "folder": "Private"}]
+        target = watch_folder / "notes.txt"
+        target.write_text("Just a normal grocery list.")
+
+        assert engine.classify("notes.txt", 100, file_path=target) == "Documents"
+
+    def test_binary_content_does_not_raise(self, engine, watch_folder):
+        engine.rules["content_keyword_rules"] = [{"keyword": "confidential", "folder": "Private"}]
+        target = watch_folder / "photo.jpg"
+        target.write_bytes(bytes(range(256)) * 4)
+
+        assert engine.classify("photo.jpg", 100, file_path=target) == "Images"
+
+
+class TestDateRules:
+    def test_matches_a_file_older_than_the_threshold(self, engine, watch_folder):
+        import os
+        import time
+
+        engine.rules["date_rules"] = [{"older_than_days": 30, "folder": "Old Stuff"}]
+        target = watch_folder / "readme"  # no extension -- would default to "Others"
+        target.write_text("hi")
+        old = time.time() - 45 * 86400
+        os.utime(target, (old, old))
+
+        assert engine.classify("readme", 100, file_path=target) == "Old Stuff"
+
+    def test_a_recent_file_does_not_match(self, engine, watch_folder):
+        engine.rules["date_rules"] = [{"older_than_days": 30, "folder": "Old Stuff"}]
+        target = watch_folder / "readme"
+        target.write_text("hi")
+
+        assert engine.classify("readme", 100, file_path=target) == "Others"
+
+    def test_never_matches_without_a_real_file_path(self, engine):
+        engine.rules["date_rules"] = [{"older_than_days": 30, "folder": "Old Stuff"}]
+        assert engine.classify("readme", 100) == "Others"
+
+    def test_overrides_the_generic_extension_category_like_large_file_already_does(
+        self, engine, watch_folder
+    ):
+        # date_rules is checked before the generic categories grouping --
+        # same priority large_file_threshold already has (see
+        # test_large_file_threshold_overrides_category above), since both
+        # are explicit, attribute-based rules the user configured on
+        # purpose, not the catch-all extension->category mapping.
+        import os
+        import time
+
+        engine.rules["date_rules"] = [{"older_than_days": 30, "folder": "Old Stuff"}]
+        target = watch_folder / "report.pdf"
+        target.write_text("hi")
+        old = time.time() - 45 * 86400
+        os.utime(target, (old, old))
+
+        assert engine.classify("report.pdf", 100, file_path=target) == "Old Stuff"

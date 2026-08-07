@@ -42,7 +42,16 @@ export function useLiveLogs(limit = 50) {
     return () => {
       cancelled = true;
       clearTimeout(retryTimer);
-      socket?.close();
+      if (!socket) return;
+      // Closing a socket that's still mid-handshake is what prints "closed
+      // before the connection is established" -- most visible under
+      // StrictMode's dev-only mount/cleanup/remount cycle. Defer the close
+      // until it actually opens instead of racing the handshake.
+      if (socket.readyState === WebSocket.CONNECTING) {
+        socket.addEventListener("open", () => socket.close(), { once: true });
+      } else {
+        socket.close();
+      }
     };
   }, [limit]);
 

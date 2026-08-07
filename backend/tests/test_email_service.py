@@ -1,7 +1,4 @@
-import io
-import json
-import urllib.error
-import urllib.request
+import smtplib
 
 import pytest
 
@@ -9,9 +6,18 @@ from services import email_service
 from services.email_service import send_email
 
 
-class FakeResponse:
-    def __init__(self, status):
-        self.status = status
+class FakeSMTP:
+    """Stands in for smtplib.SMTP as a context manager, recording the calls
+    send_email is expected to make (starttls, login, sendmail)."""
+
+    instances = []
+
+    def __init__(self, host, port, timeout=None):
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.calls = []
+        FakeSMTP.instances.append(self)
 
     def __enter__(self):
         return self
@@ -19,74 +25,76 @@ class FakeResponse:
     def __exit__(self, *args):
         return False
 
+    def starttls(self):
+        self.calls.append(("starttls",))
+
+    def login(self, username, password):
+        self.calls.append(("login", username, password))
+
+    def sendmail(self, from_addr, to_addrs, message):
+        self.calls.append(("sendmail", from_addr, to_addrs, message))
+
+
+@pytest.fixture(autouse=True)
+def _reset_fake_smtp_instances():
+    FakeSMTP.instances.clear()
+
 
 @pytest.fixture()
-def resend_configured(monkeypatch):
-    monkeypatch.setattr(email_service.settings, "RESEND_API_KEY", "re_test_key")
-    monkeypatch.setattr(email_service.settings, "RESEND_FROM_EMAIL", "onboarding@resend.dev")
+def smtp_configured(monkeypatch):
+    monkeypatch.setattr(email_service.settings, "SMTP_HOST", "smtp.gmail.com")
+    monkeypatch.setattr(email_service.settings, "SMTP_PORT", 587)
+    monkeypatch.setattr(email_service.settings, "SMTP_USERNAME", "someone@gmail.com")
+    monkeypatch.setattr(email_service.settings, "SMTP_PASSWORD", "app-password")
+    monkeypatch.setattr(email_service.settings, "SMTP_FROM_EMAIL", "someone@gmail.com")
 
 
 class TestSendEmail:
-    def test_skips_the_request_entirely_when_no_api_key_is_set(self, monkeypatch):
-        monkeypatch.setattr(email_service.settings, "RESEND_API_KEY", None)
-        calls = []
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: calls.append(a) or FakeResponse(200))
+    def test_skips_the_send_entirely_when_credentials_are_not_set(self, monkeypatch):
+        monkeypatch.setattr(email_service.settings, "SMTP_USERNAME", None)
+        monkeypatch.setattr(email_service.settings, "SMTP_PASSWORD", None)
+        monkeypatch.setattr(smtplib, "SMTP", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not connect")))
 
         result = send_email("Subject", "<p>hi</p>", "someone@example.com")
 
         assert result is False
-        assert calls == []
 
-    def test_returns_true_on_a_successful_response(self, resend_configured, monkeypatch):
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: FakeResponse(200))
+    def test_returns_true_on_a_successful_send(self, smtp_configured, monkeypatch):
+        monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
 
         assert send_email("Subject", "<p>hi</p>", "someone@example.com") is True
 
-    def test_sends_the_expected_payload_and_headers(self, resend_configured, monkeypatch):
-        captured = {}
-
-        def fake_urlopen(request, timeout=None):
-            captured["url"] = request.full_url
-            captured["method"] = request.get_method()
-            captured["headers"] = {k.lower(): v for k, v in request.headers.items()}
-            captured["body"] = json.loads(request.data)
-            captured["timeout"] = timeout
-            return FakeResponse(200)
-
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    def test_sends_the_expected_envelope_and_content(self, smtp_configured, monkeypatch):
+        monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
 
         send_email("Weekly digest", "<p>content</p>", "someone@example.com")
 
-        assert captured["url"] == email_service.RESEND_API_URL
-        assert captured["method"] == "POST"
-        assert captured["headers"]["authorization"] == "Bearer re_test_key"
-        assert captured["headers"]["content-type"] == "application/json"
-        assert captured["timeout"] == 10
-        assert captured["body"] == {
-            "from": "onboarding@resend.dev",
-            "to": ["someone@example.com"],
-            "subject": "Weekly digest",
-            "html": "<p>content</p>",
-        }
+        smtp = FakeSMTP.instances[0]
+        assert smtp.host == "smtp.gmail.com"
+        assert smtp.port == 587
+        assert ("starttls",) in smtp.calls
+        assert ("login", "someone@gmail.com", "app-password") in smtp.calls
 
-    def test_returns_false_when_resend_rejects_the_request(self, resend_configured, monkeypatch):
-        def raise_http_error(*args, **kwargs):
-            raise urllib.error.HTTPError(
-                url=email_service.RESEND_API_URL,
-                code=401,
-                msg="Unauthorized",
-                hdrs=None,
-                fp=io.BytesIO(b'{"message": "invalid api key"}'),
-            )
+        sendmail_call = next(c for c in smtp.calls if c[0] == "sendmail")
+        _, from_addr, to_addrs, message = sendmail_call
+        assert from_addr == "someone@gmail.com"
+        assert to_addrs == ["someone@example.com"]
+        assert "Weekly digest" in message
+        assert "<p>content</p>" in message
 
-        monkeypatch.setattr(urllib.request, "urlopen", raise_http_error)
+    def test_returns_false_when_authentication_fails(self, smtp_configured, monkeypatch):
+        class RejectingSMTP(FakeSMTP):
+            def login(self, username, password):
+                raise smtplib.SMTPAuthenticationError(535, b"bad credentials")
+
+        monkeypatch.setattr(smtplib, "SMTP", RejectingSMTP)
 
         assert send_email("Subject", "<p>hi</p>", "someone@example.com") is False
 
-    def test_returns_false_on_a_network_error(self, resend_configured, monkeypatch):
-        def raise_url_error(*args, **kwargs):
-            raise urllib.error.URLError("network is down")
+    def test_returns_false_on_a_connection_error(self, smtp_configured, monkeypatch):
+        def raise_connection_error(*args, **kwargs):
+            raise OSError("network is down")
 
-        monkeypatch.setattr(urllib.request, "urlopen", raise_url_error)
+        monkeypatch.setattr(smtplib, "SMTP", raise_connection_error)
 
         assert send_email("Subject", "<p>hi</p>", "someone@example.com") is False

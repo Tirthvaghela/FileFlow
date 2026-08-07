@@ -4,6 +4,8 @@ import threading
 from pathlib import Path
 
 from config.settings import settings
+from rules.classifier import classify_file, is_within_watch_folder
+from rules.classifier import should_timestamp_rename as _should_timestamp_rename
 
 _lock = threading.Lock()
 logger = logging.getLogger("fileflow.rules")
@@ -13,21 +15,6 @@ logger = logging.getLogger("fileflow.rules")
 # constructing a real per-user one -- lets tests freely mutate one shared
 # `rules` dict via the `test_rules` fixture. Always None in production.
 _test_engine_override: "RuleEngine | None" = None
-
-
-def is_within_watch_folder(folder: str, watch_root: Path) -> bool:
-    """A destination folder (name or absolute path) must resolve to
-    somewhere inside a user's own watch folder -- shared by anything that
-    writes based on rules config (the rule engine's classify() path, and
-    the archive scheduler), so a typo'd or malicious value never causes a
-    file to be moved outside the tree that user's FileFlow instance was
-    told to manage."""
-    try:
-        root = watch_root.resolve()
-        candidate = (watch_root / folder).resolve()
-    except (OSError, ValueError):
-        return False
-    return candidate == root or root in candidate.parents
 
 
 def _load_default_template() -> dict:
@@ -69,57 +56,12 @@ class RuleEngine:
             replacement["_id"] = self.doc_id
             self.db.rules.replace_one({"_id": self.doc_id}, replacement, upsert=True)
 
-    def _validated(self, folder: str) -> str | None:
-        if is_within_watch_folder(folder, self.watch_root):
-            return folder
-        logger.warning(
-            "Ignoring rule destination outside the watch folder: %r", folder
-        )
-        return None
-
-    def classify(self, filename: str, file_size_bytes: int) -> str:
+    def classify(self, filename: str, file_size_bytes: int, file_path: Path | None = None) -> str:
         """Return the destination folder name for a given file."""
-        name_lower = filename.lower()
-        ext = Path(filename).suffix.lower()
-
-        for rule in self.rules.get("keyword_rules", []):
-            if rule["keyword"].lower() in name_lower:
-                folder = self._validated(rule["folder"])
-                if folder:
-                    return folder
-
-        extension_rules = self.rules.get("extension_rules", {})
-        if ext in extension_rules:
-            folder = self._validated(extension_rules[ext])
-            if folder:
-                return folder
-
-        threshold_mb = self.rules.get("large_file_threshold_mb")
-        if (
-            self.rules.get("large_file_enabled", True)
-            and threshold_mb
-            and file_size_bytes > threshold_mb * 1024 * 1024
-        ):
-            folder = self._validated(self.rules.get("large_file_folder", "Large Files"))
-            if folder:
-                return folder
-
-        for category, extensions in self.rules.get("categories", {}).items():
-            if ext in extensions:
-                return self._validated(category) or "Others"
-
-        if ext and self.rules.get("auto_organize_unknown_extensions", True):
-            auto_folder = f"{ext[1:].upper()} Files"
-            folder = self._validated(auto_folder)
-            if folder:
-                return folder
-
-        return self._validated(self.rules.get("default_category", "Others")) or "Others"
+        return classify_file(self.rules, filename, file_size_bytes, self.watch_root, file_path)
 
     def should_timestamp_rename(self, category: str) -> bool:
-        if not self.rules.get("enable_timestamp_rename", False):
-            return False
-        return category in self.rules.get("timestamp_rename_categories", [])
+        return _should_timestamp_rename(self.rules, category)
 
     @property
     def archive_after_days(self) -> int:

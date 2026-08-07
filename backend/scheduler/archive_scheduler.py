@@ -1,21 +1,34 @@
 import logging
-import shutil
 import time
+from datetime import datetime
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from config.settings import settings
+from automation.organizer import organize_existing_files
+from config.settings import all_watch_folders, settings
 from database.db import db, insert_with_id
 from models.models import new_activity_log
 from rules.rule_engine import get_rule_engine, is_within_watch_folder
+from services.agent_service import enqueue_agent_command, is_agent_connected
 from services.digest_service import send_weekly_digest
 
 logger = logging.getLogger("fileflow.archive")
 
 
 def _archive_old_files_for_user(user: dict) -> int:
-    watch_root = Path(user["watch_folder"])
+    """Sweeps every folder this account watches (primary plus any
+    additional ones) -- each gets its own Archive subfolder inside itself,
+    all governed by the same shared rules (archive_after_days,
+    archive_folder name)."""
+    total = 0
+    for watch_root in all_watch_folders(user):
+        if watch_root.exists():
+            total += _archive_old_files_in_folder(user, watch_root)
+    return total
+
+
+def _archive_old_files_in_folder(user: dict, watch_root: Path) -> int:
     engine = get_rule_engine(db, user["id"], watch_root)
 
     archive_folder_name = engine.archive_folder
@@ -53,8 +66,21 @@ def _archive_old_files_for_user(user: dict) -> int:
             counter += 1
 
         original_category = path.parent.name
-        file_size = path.stat().st_size
-        shutil.move(str(path), str(dest))
+        try:
+            file_size = path.stat().st_size
+            # .rename(), not shutil.move(): shutil's own fallback silently
+            # absorbs a "destination already exists" collision by copying
+            # over it instead of raising (see the equivalent fix in
+            # automation/organizer.py) -- a real risk here since this scan
+            # can race a manual reclassify/undo touching the same file
+            # while the scheduled sweep is mid-run.
+            path.rename(dest)
+        except OSError:
+            logger.warning(
+                "Could not archive %s for user %d -- left in place, will retry next sweep.",
+                path, user["id"],
+            )
+            continue
 
         insert_with_id(
             db,
@@ -81,7 +107,13 @@ def archive_old_files() -> int:
     across every registered account."""
     total = 0
     for user in list(db.users.find()):
-        total += _archive_old_files_for_user(user)
+        try:
+            total += _archive_old_files_for_user(user)
+        except Exception:
+            # One account's bad environment (an unreadable/locked folder,
+            # a permission issue) must not silently skip every account
+            # that happens to sort after it in this sweep.
+            logger.exception("Archive sweep failed for user %d -- skipping.", user["id"])
 
     if total:
         logger.info("Archived %d file(s)", total)
@@ -90,7 +122,52 @@ def archive_old_files() -> int:
 
 def _weekly_digest_job() -> None:
     for user in list(db.users.find()):
-        send_weekly_digest(db, user)
+        try:
+            send_weekly_digest(db, user)
+        except Exception:
+            logger.exception("Weekly digest failed for user %d -- skipping.", user["id"])
+
+
+def _run_scheduled_organize_for_user(user: dict, today: str) -> None:
+    watch_root = Path(user["watch_folder"])
+    engine = get_rule_engine(db, user["id"], watch_root)
+    if not engine.rules.get("scheduled_organize_enabled", False):
+        return
+
+    target_time = engine.rules.get("scheduled_organize_time", "02:00")
+    # Wall-clock local time, deliberately not UTC: a user who types "02:00"
+    # means their own machine's 2am, and this app's actual deployment model
+    # (see the remote-agent feature) is the backend and the account it
+    # serves running on the same machine -- there's no separate per-account
+    # timezone setting to convert from, so local time is both the simplest
+    # option and the one that matches what the user actually typed.
+    now = datetime.now()
+    if now.strftime("%H:%M") < target_time:
+        return
+    if user.get("scheduled_organize_last_run") == today:
+        # Already ran today -- the check interval is far shorter than a
+        # day, so without this a single "past 2am" state would re-trigger
+        # on every subsequent check until midnight.
+        return
+
+    if is_agent_connected(user):
+        enqueue_agent_command(db, user["id"], "organize_existing", {})
+    else:
+        organize_existing_files(db, user)
+    db.users.update_one({"_id": user["id"]}, {"$set": {"scheduled_organize_last_run": today}})
+
+
+def run_scheduled_organizes() -> None:
+    """Runs each account's own "organize existing files" sweep once it
+    passes their configured daily time -- an unattended equivalent of
+    clicking "Organize existing files now" on a schedule, rather than only
+    on real-time drops or a manual click."""
+    today = datetime.now().date().isoformat()
+    for user in list(db.users.find()):
+        try:
+            _run_scheduled_organize_for_user(user, today)
+        except Exception:
+            logger.exception("Scheduled organize failed for user %d -- skipping.", user["id"])
 
 
 def start_scheduler() -> BackgroundScheduler:
@@ -110,5 +187,12 @@ def start_scheduler() -> BackgroundScheduler:
             id="weekly_digest",
             next_run_time=None,
         )
+    scheduler.add_job(
+        run_scheduled_organizes,
+        "interval",
+        minutes=settings.SCHEDULED_ORGANIZE_CHECK_INTERVAL_MINUTES,
+        id="scheduled_organizes",
+        next_run_time=None,
+    )
     scheduler.start()
     return scheduler

@@ -17,5 +17,9 @@ export default function ProtectedRoute() {
     return <Navigate to="/login" replace state={{ from: location }} />;
   }
 
+  if (!user.onboarding_completed && location.pathname !== "/app/welcome") {
+    return <Navigate to="/app/welcome" replace />;
+  }
+
   return <Outlet />;
 }

@@ -38,6 +38,27 @@ class TestRateLimiter:
         limiter = RateLimiter(max_requests=1, window_seconds=60)
         limiter.check("1.2.3.4")
         limiter.reset()
+
+    def test_expired_keys_are_evicted_once_the_tracked_set_grows_large(self):
+        # Without eviction, a key sits in `_hits` forever even after its
+        # whole hit-list has expired -- sustained traffic from many distinct
+        # IPs (this limiter is applied to public, unauthenticated endpoints)
+        # would grow it without bound for the life of the process.
+        limiter = RateLimiter(max_requests=5, window_seconds=0.05, max_tracked_keys=3)
+
+        for i in range(3):
+            limiter.check(f"1.2.3.{i}")
+        assert len(limiter._hits) == 3
+
+        time.sleep(0.1)  # let all three keys' hits fully expire
+
+        # Crossing max_tracked_keys on this 4th distinct key triggers a sweep.
+        limiter.check("9.9.9.9")
+
+        assert len(limiter._hits) == 1
+        assert "9.9.9.9" in limiter._hits
+        for i in range(3):
+            assert f"1.2.3.{i}" not in limiter._hits
         limiter.check("1.2.3.4")
 
 

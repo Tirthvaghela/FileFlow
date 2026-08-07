@@ -140,3 +140,101 @@ def test_cannot_point_watch_folder_at_another_accounts_folder(two_clients):
     resp = alice.put("/api/settings/watch-folder", json={"path": str(bob.watch_folder)})
 
     assert resp.status_code == 400
+
+
+def test_cannot_point_watch_folder_at_a_subfolder_of_another_accounts_folder(two_clients):
+    # An exact-match check alone isn't enough: a subfolder of bob's tree
+    # (e.g. a category folder his own rules already created) gives alice
+    # the same access to his files as pointing at his folder directly would.
+    alice, bob = two_clients
+    nested = bob.watch_folder / "Documents"
+    nested.mkdir(parents=True, exist_ok=True)
+
+    resp = alice.put("/api/settings/watch-folder", json={"path": str(nested)})
+
+    assert resp.status_code == 400
+
+
+def test_cannot_point_watch_folder_at_an_ancestor_of_another_accounts_folder(two_clients):
+    # The reverse direction: an ancestor of bob's folder would also let
+    # alice's watcher/organize-existing reach into bob's tree.
+    alice, bob = two_clients
+    ancestor = bob.watch_folder.parent
+
+    resp = alice.put("/api/settings/watch-folder", json={"path": str(ancestor)})
+
+    assert resp.status_code == 400
+
+
+def test_can_add_an_additional_watch_folder(two_clients, tmp_path):
+    alice, _bob = two_clients
+    extra = tmp_path / "alice_extra"
+
+    resp = alice.post("/api/settings/watch-folders", json={"path": str(extra)})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert str(extra) in body["additional_watch_folders"]
+    assert body["watch_folder"] == str(alice.watch_folder)
+
+
+def test_cannot_add_an_additional_folder_that_overlaps_another_accounts(two_clients):
+    alice, bob = two_clients
+
+    resp = alice.post("/api/settings/watch-folders", json={"path": str(bob.watch_folder)})
+
+    assert resp.status_code == 400
+
+
+def test_cannot_add_an_additional_folder_that_overlaps_your_own_primary_folder(two_clients):
+    alice, _bob = two_clients
+
+    resp = alice.post("/api/settings/watch-folders", json={"path": str(alice.watch_folder)})
+
+    assert resp.status_code == 400
+
+
+def test_cannot_add_the_same_additional_folder_twice_as_an_overlap(two_clients, tmp_path):
+    alice, _bob = two_clients
+    extra = tmp_path / "alice_extra"
+    alice.post("/api/settings/watch-folders", json={"path": str(extra)})
+
+    resp = alice.post("/api/settings/watch-folders", json={"path": str(extra)})
+
+    assert resp.status_code == 400
+
+
+def test_can_remove_an_additional_watch_folder(two_clients, tmp_path):
+    alice, _bob = two_clients
+    extra = tmp_path / "alice_extra"
+    alice.post("/api/settings/watch-folders", json={"path": str(extra)})
+
+    resp = alice.request("DELETE", "/api/settings/watch-folders", json={"path": str(extra)})
+
+    assert resp.status_code == 200
+    assert str(extra) not in resp.json()["additional_watch_folders"]
+
+
+def test_removing_bobs_folder_by_path_does_not_touch_it_since_it_was_never_alices(
+    two_clients, tmp_path
+):
+    # $pull only ever targets this account's own array -- there's no way
+    # to reference another account's document through this route at all,
+    # but this pins down that a no-op removal doesn't error either.
+    alice, bob = two_clients
+
+    resp = alice.request("DELETE", "/api/settings/watch-folders", json={"path": str(bob.watch_folder)})
+
+    assert resp.status_code == 200
+    assert bob.get("/api/auth/me").json()["watch_folder"] == str(bob.watch_folder)
+
+
+def test_adding_an_additional_folder_for_one_account_does_not_affect_the_other(
+    two_clients, tmp_path
+):
+    alice, bob = two_clients
+    extra = tmp_path / "alice_extra"
+
+    alice.post("/api/settings/watch-folders", json={"path": str(extra)})
+
+    assert bob.get("/api/auth/me").json()["additional_watch_folders"] == []

@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from models.schemas import CategoryStat, RulePreviewOut
@@ -21,6 +22,15 @@ def preview_rule(db, user_id: int, rule_type: str, match: str) -> RulePreviewOut
     if rule_type == "extension":
         ext = (match if match.startswith(".") else f".{match}").lower()
         matches = [r for r in rows if Path(r["original_filename"]).suffix.lower() == ext]
+    elif rule_type == "regex":
+        try:
+            pattern = re.compile(match, re.IGNORECASE)
+        except re.error:
+            # Same "not ready yet" treatment as an empty match above --
+            # this fires on every keystroke of a pattern the user is still
+            # typing, so a half-finished pattern must not read as an error.
+            return RulePreviewOut(matched_count=0, by_category=[], samples=[])
+        matches = [r for r in rows if pattern.search(r["original_filename"])]
     else:
         needle = match.lower()
         matches = [r for r in rows if needle in r["original_filename"].lower()]

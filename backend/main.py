@@ -4,8 +4,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.agent_routes import router as agent_router
 from api.auth_routes import router as auth_router
 from api.routes import router as api_router
+from api.twofa_routes import router as twofa_router
 from api.websocket_manager import manager
 from api.ws import router as ws_router
 from config.settings import settings
@@ -51,7 +53,9 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(twofa_router)
 app.include_router(api_router)
+app.include_router(agent_router)
 app.include_router(ws_router)
 
 

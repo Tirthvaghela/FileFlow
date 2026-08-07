@@ -16,4 +16,4 @@ def notify(title: str, message: str, rules: dict) -> None:
 
         notification.notify(title=title, message=message, timeout=5)
     except Exception as exc:  # noqa: BLE001
-        logger.debug("Desktop notification skipped: %s", exc)
+        logger.warning("Desktop notification failed (%s): %s", type(exc).__name__, exc)
