@@ -1,6 +1,6 @@
 <Activity mc:Ignorable="sap sap2010" x:Class="DetectFiles" VisualBasic.Settings="{x:Null}" sap2010:WorkflowViewState.IdRef="ActivityBuilder_2" xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:s="clr-namespace:System;assembly=System.Private.CoreLib" xmlns:sio="clr-namespace:System.IO;assembly=System.Private.CoreLib" xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation" xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation" xmlns:scg="clr-namespace:System.Collections.Generic;assembly=System.Private.CoreLib" xmlns:sco="clr-namespace:System.Collections.ObjectModel;assembly=System.Private.CoreLib" xmlns:ui="http://schemas.uipath.com/workflow/activities" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
   <x:Members>
-    <x:Property Name="out_Files" Type="OutArgument(s:String[])" />
+    <x:Property Name="out_Files" Type="OutArgument(scg:List(x:String))" />
   </x:Members>
   <TextExpression.NamespacesForImplementation>
     <sco:Collection x:TypeArguments="x:String">
@@ -96,10 +96,10 @@
     </sap:WorkflowViewStateService.ViewState>
     <Assign DisplayName="Scan watch folder" sap:VirtualizedContainerService.HintSize="452,175" sap2010:WorkflowViewState.IdRef="Assign_101">
       <Assign.To>
-        <OutArgument x:TypeArguments="s:String[]">[out_Files]</OutArgument>
+        <OutArgument x:TypeArguments="scg:List(x:String)">[out_Files]</OutArgument>
       </Assign.To>
       <Assign.Value>
-        <InArgument x:TypeArguments="s:String[]">[System.IO.Directory.GetFiles("C:\Users\Tirth\OneDrive\Desktop\FileFlow\uipath\TestDownloads")]</InArgument>
+        <InArgument x:TypeArguments="scg:List(x:String)">[System.IO.Directory.GetFiles("C:\Users\Tirth\OneDrive\Desktop\FileFlow\uipath\TestDownloads").ToList()]</InArgument>
       </Assign.Value>
     </Assign>
   </Sequence>

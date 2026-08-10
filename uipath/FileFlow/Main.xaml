@@ -87,7 +87,7 @@
   </sap:WorkflowViewStateService.ViewState>
   <Sequence DisplayName="Main Sequence" sap:VirtualizedContainerService.HintSize="1281,1584" sap2010:WorkflowViewState.IdRef="Sequence_1">
     <Sequence.Variables>
-      <Variable x:TypeArguments="s:String[]" Name="sourceFiles" />
+      <Variable x:TypeArguments="scg:List(x:String)" Name="sourceFiles" />
       <Variable x:TypeArguments="x:String" Name="destFolder" />
       <Variable x:TypeArguments="x:String" Name="destFolderPath" />
       <Variable x:TypeArguments="x:String" Name="finalFileName" />
@@ -102,7 +102,7 @@
     <ui:InvokeWorkflowFile DisplayName="1. Detected -- Invoke DetectFiles.xaml" WorkflowFileName="DetectFiles.xaml" sap:VirtualizedContainerService.HintSize="452,175" sap2010:WorkflowViewState.IdRef="InvokeWorkflowFile_1">
       <ui:InvokeWorkflowFile.Arguments>
         <scg:Dictionary x:TypeArguments="x:String, x:Object">
-          <OutArgument x:TypeArguments="s:String[]" x:Key="out_Files">[sourceFiles]</OutArgument>
+          <OutArgument x:TypeArguments="scg:List(x:String)" x:Key="out_Files">[sourceFiles]</OutArgument>
         </scg:Dictionary>
       </ui:InvokeWorkflowFile.Arguments>
     </ui:InvokeWorkflowFile>

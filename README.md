@@ -541,7 +541,8 @@ Originally built as a single-tenant SQLite app, FileFlow has since gone through 
 - **Found and fixed a genuine double-processing bug**: the backend's own local watcher never checked whether a remote agent was already covering an account's folder, so a file could be organized once by each, with the loser reporting a confusing false "duplicate". Fixed by having the local watcher defer to a connected agent, same as undo/reclassify/organize-existing already did.
 - **Added scheduled nightly organizing, multiple watch folders per account, regex/content/file-age rule types, and rule template export/import** — see the feature sections above.
 - Replaced a from-scratch task backlog with genuine end-to-end verification for each of the above: real accounts, real files on disk, real HTTP round trips against the live server (not just the test suite) — this is also how a handful of real bugs were caught that the test suite alone missed (a FastAPI default-value quirk that silently dropped a request body field; a browser caching an installer download and never re-fetching a newer one).
-- **334 tests passing** (283 backend, 24 agent, 27 frontend), verified against real infrastructure (a real MongoDB instance, a real running server, real file drops, a real installed Windows agent, real UiPath execution logs) rather than mocks alone.
+- **Added per-row Undo on the History page** (any operation can now be reversed independently of order, not just the most recent one) and a **category detail page** — clicking a Categories card opens every real file in that folder, sortable by size/date, with a Recycle-Bin-backed delete.
+- **344 tests passing** (293 backend, 24 agent, 27 frontend), verified against real infrastructure (a real MongoDB instance, a real running server, real file drops, a real installed Windows agent, real UiPath execution logs) rather than mocks alone.
 
 ## Known issues / not yet done
 
@@ -551,7 +552,7 @@ Originally built as a single-tenant SQLite app, FileFlow has since gone through 
 - The remote agent installer is unsigned — Windows SmartScreen/antivirus may flag it; code signing is a paid certificate, out of scope for now.
 - The remote agent watches one folder per install; the multiple-watch-folders feature is currently backend-only.
 - Multiple watch folders share one rule set per account — independent rules per folder would be a larger, separate change.
-- No pagination on Activity Log (capped at 500 rows); no bulk actions; no data export beyond the existing CSV/Excel/PDF reports.
+- No pagination on Activity Log (capped at 500 rows); no multi-select bulk actions (undo/delete/reclassify still one row/file at a time, though no longer restricted to "most recent only"); no data export beyond the existing CSV/Excel/PDF reports.
 - Frontend dark mode covers the marketing pages only, not the authenticated app; JS bundle isn't code-split (~1.2MB).
 
 ---
@@ -591,7 +592,7 @@ _Screenshots of the dashboard and automation in action will be added here. See `
 - **Multi-folder support in the remote agent** — the backend already watches several folders per account; the downloadable agent still only watches one per install
 - **Chained / conditional rules** — actions that trigger off another rule's result (e.g. "anything filed under Finance Folder that's also over 90 days old → also move to a Tax Archive"), instead of every rule being evaluated independently against the original file
 - **Webhook / Slack / Discord actions** — send an automation event somewhere other than the desktop toast or weekly email digest, e.g. "post to a channel whenever a large file lands"
-- **Bulk automation actions** — undo or reclassify more than one Activity Log entry at a time, instead of one at a time
+- **Bulk automation actions** — every History row can now be undone independently (no longer "most recent only"), and Category pages support per-file delete; still missing is multi-*select* (checkbox several rows/files and undo/delete/reclassify them together in one action)
 - **Code-signed, auto-updating installer** — remove the current SmartScreen/antivirus friction on first install without giving up the checksum-verified auto-update pipeline already in place
 
 ---
