@@ -8,10 +8,14 @@ from fastapi.responses import FileResponse, StreamingResponse
 from api.auth import get_current_user
 from automation.organizer import (
     claim_undoable_log,
+    claim_undoable_log_by_id,
+    delete_category_file,
     generate_simulated_download,
+    list_category_files,
     organize_existing_files,
     reclassify_file,
     undo_last_operation,
+    undo_specific_operation,
 )
 from config.agent_release import AGENT_RELEASE_PATH
 from config.onboarding_templates import ONBOARDING_TEMPLATES
@@ -21,7 +25,10 @@ from models.models import Document
 from models.schemas import (
     ActivityLogOut,
     AdditionalWatchFolderRequest,
+    CategoryFileDeleteRequest,
+    CategoryFileOut,
     CategorySizeStat,
+    DeleteResult,
     DigestResult,
     FolderPickOut,
     OnboardingTemplateOut,
@@ -69,6 +76,38 @@ def stats(db=Depends(get_db), user=Depends(get_current_user)):
 @router.get("/categories", response_model=list[CategorySizeStat])
 def categories(db=Depends(get_db), user=Depends(get_current_user)):
     return get_category_sizes(db, user["id"])
+
+
+@router.get("/categories/{category}/files", response_model=list[CategoryFileOut])
+def get_category_files(category: str, user=Depends(get_current_user)):
+    """A live listing of what's actually sitting in this category folder
+    right now, sorted largest-first by default -- the frontend re-sorts
+    client-side, but a sensible default matters for whoever's here to find
+    what's eating space."""
+    files = list_category_files(user, category)
+    files.sort(key=lambda f: f["size_bytes"], reverse=True)
+    return files
+
+
+@router.delete("/categories/{category}/files", response_model=DeleteResult)
+def delete_category_file_route(
+    category: str,
+    body: CategoryFileDeleteRequest,
+    db=Depends(get_db),
+    user=Depends(get_current_user),
+):
+    if is_agent_connected(user):
+        # The real folder lives on the agent's own machine, not necessarily
+        # this backend's -- deleting a same-named path here could do
+        # nothing, or worse, delete an unrelated file that happens to exist
+        # at that path on the backend's machine. Refusing cleanly beats
+        # guessing at a command the agent doesn't support yet.
+        return DeleteResult(
+            success=False,
+            message="Deleting files isn't supported yet for accounts with a connected agent.",
+        )
+    success, message = delete_category_file(db, user, category, body.path)
+    return DeleteResult(success=success, message=message)
 
 
 @router.get("/rules", response_model=RulesOut)
@@ -240,6 +279,33 @@ def undo(db=Depends(get_db), user=Depends(get_current_user)):
         )
 
     success, message, log = undo_last_operation(db, user)
+    return UndoResult(success=success, message=message, log=log)
+
+
+@router.post("/logs/{log_id}/undo", response_model=UndoResult)
+def undo_log(log_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+    """Same as /undo, but targets one specific row a user picked from
+    History instead of always whichever is most recent -- every row gets
+    its own working Undo button, not just the latest one."""
+    if is_agent_connected(user):
+        log = claim_undoable_log_by_id(db, user["id"], log_id)
+        if log is None:
+            return UndoResult(success=False, message="That operation can't be undone.")
+        enqueue_agent_command(
+            db,
+            user["id"],
+            "undo",
+            {
+                "log_id": log["id"],
+                "source_path": log.source_path,
+                "destination_path": log.destination_path,
+            },
+        )
+        return UndoResult(
+            success=True, message="Queued -- your agent will pick this up shortly.", queued=True
+        )
+
+    success, message, log = undo_specific_operation(db, user, log_id)
     return UndoResult(success=success, message=message, log=log)
 
 

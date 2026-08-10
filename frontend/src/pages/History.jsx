@@ -3,7 +3,7 @@ import ActivityTable from "../components/ActivityTable.jsx";
 import { CheckCircle2, RotateCcw, Undo2 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { useLiveLogs } from "../hooks/useLiveLogs.js";
-import { reclassifyLog, undoLastOperation } from "../services/api.js";
+import { reclassifyLog, undoLastOperation, undoLog } from "../services/api.js";
 import { collectKnownFolders } from "../utils/categoryMeta.js";
 import { useRules } from "../context/RulesContext.jsx";
 import { useState } from "react";
@@ -12,11 +12,24 @@ export default function History() {
   const { logs, refresh } = useLiveLogs(100);
   const { rules } = useRules();
   const [message, setMessage] = useState("");
+  const [undoingId, setUndoingId] = useState(null);
 
-  async function handleUndo() {
+  async function handleUndoLast() {
     const result = await undoLastOperation();
     setMessage(result.message);
     refresh();
+  }
+
+  async function handleUndoRow(log) {
+    if (undoingId) return;
+    setUndoingId(log.id);
+    try {
+      const result = await undoLog(log.id);
+      setMessage(result.message);
+      refresh();
+    } finally {
+      setUndoingId(null);
+    }
   }
 
   async function handleReclassify(log, category) {
@@ -75,7 +88,7 @@ export default function History() {
               </p>
             </div>
             <button
-              onClick={handleUndo}
+              onClick={handleUndoLast}
               className="flex items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--gridline)]"
             >
               <Undo2 className="h-3.5 w-3.5" />
@@ -99,6 +112,9 @@ export default function History() {
           <ActivityTable
             logs={logs}
             showStatusBadge
+            onUndo={handleUndoRow}
+            undoingId={undoingId}
+            allowAnyRowUndo
             onReclassify={handleReclassify}
             categories={knownFolders}
           />

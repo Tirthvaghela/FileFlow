@@ -12,6 +12,7 @@ import Dashboard from "./pages/Dashboard.jsx";
 import ActivityLog from "./pages/ActivityLog.jsx";
 import Rules from "./pages/Rules.jsx";
 import Categories from "./pages/Categories.jsx";
+import CategoryDetail from "./pages/CategoryDetail.jsx";
 import Reports from "./pages/Reports.jsx";
 import History from "./pages/History.jsx";
 import Settings from "./pages/Settings.jsx";
@@ -34,6 +35,7 @@ export default function App() {
             <Route path="activity" element={<ActivityLog />} />
             <Route path="rules" element={<Rules />} />
             <Route path="categories" element={<Categories />} />
+            <Route path="categories/:category" element={<CategoryDetail />} />
             <Route path="reports" element={<Reports />} />
             <Route path="history" element={<History />} />
             <Route path="settings" element={<Settings />} />

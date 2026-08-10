@@ -1,12 +1,13 @@
 import io
 import logging
 import random
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pymongo import ReturnDocument
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas as pdf_canvas
+from send2trash import send2trash
 
 from automation.file_ops import (
     build_final_name,
@@ -40,7 +41,10 @@ __all__ = [
     "claim_undoable_log",
     "release_undo_claim",
     "undo_last_operation",
+    "undo_specific_operation",
     "reclassify_file",
+    "list_category_files",
+    "delete_category_file",
 ]
 
 
@@ -259,20 +263,16 @@ def release_undo_claim(db, log_id: int) -> None:
     db.activity_log.update_one({"_id": log_id}, {"$set": {"undone": False}})
 
 
-def undo_last_operation(db, user: dict) -> tuple[bool, str, Document | None]:
-    log = claim_undoable_log(db, user["id"])
-    if log is None:
-        return False, "No undoable operation found.", None
-
+def _perform_undo(db, log: Document) -> tuple[bool, str, Document | None]:
     dest = Path(log.destination_path)
     source = Path(log.source_path)
 
-    # Same _move_lock as process_file/reclassify_file: the Mongo claim above
-    # already keeps two undo calls for the *same row* from double-moving,
-    # but it can't stop this undo's destination path from colliding with a
-    # totally different row's concurrent process_file/reclassify move --
-    # only a shared lock around every "check exists, then move" sequence
-    # closes that.
+    # Same _move_lock as process_file/reclassify_file: the Mongo claim that
+    # got us this log already keeps two undo calls for the *same row* from
+    # double-moving, but it can't stop this undo's destination path from
+    # colliding with a totally different row's concurrent process_file/
+    # reclassify move -- only a shared lock around every "check exists,
+    # then move" sequence closes that.
     with _move_lock:
         if not dest.exists():
             # Already claimed, but there's no file work to do -- release the
@@ -298,6 +298,35 @@ def undo_last_operation(db, user: dict) -> tuple[bool, str, Document | None]:
 
     log.undone = True
     return True, f"Restored {log.final_filename} to its original location.", log
+
+
+def undo_last_operation(db, user: dict) -> tuple[bool, str, Document | None]:
+    log = claim_undoable_log(db, user["id"])
+    if log is None:
+        return False, "No undoable operation found.", None
+    return _perform_undo(db, log)
+
+
+def claim_undoable_log_by_id(db, user_id: int, log_id: int) -> Document | None:
+    """Same atomic claim-before-touching-the-filesystem guarantee as
+    claim_undoable_log, but for a specific row a user picked from History
+    rather than always "whichever is most recent" -- lets each row carry
+    its own working Undo button instead of only the single latest one."""
+    raw = db.activity_log.find_one_and_update(
+        {"_id": log_id, "user_id": user_id, "undone": False, "action": {"$in": UNDOABLE_ACTIONS}},
+        {"$set": {"undone": True}},
+        return_document=ReturnDocument.BEFORE,
+    )
+    if not raw or not raw.get("destination_path"):
+        return None
+    return Document(raw)
+
+
+def undo_specific_operation(db, user: dict, log_id: int) -> tuple[bool, str, Document | None]:
+    log = claim_undoable_log_by_id(db, user["id"], log_id)
+    if log is None:
+        return False, "That operation can't be undone (already undone, or not found).", None
+    return _perform_undo(db, log)
 
 
 def reclassify_file(
@@ -388,3 +417,75 @@ def reclassify_file(
         ),
     )
     return True, f"Moved {dest_path.name} to {category}.", Document(new_log)
+
+
+def list_category_files(user: dict, category: str) -> list[dict]:
+    """Every real file currently sitting in this one category folder,
+    across every watch folder the account has -- a live disk read, not an
+    activity_log aggregate, since the point (browsing a folder to decide
+    what to delete) needs what's actually there right now, including
+    anything that landed in the folder by some means other than FileFlow
+    itself."""
+    files: list[dict] = []
+    for root in all_watch_folders(user):
+        category_folder = root / category
+        if not category_folder.is_dir():
+            continue
+        for path in category_folder.iterdir():
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            files.append(
+                {
+                    "name": path.name,
+                    "path": str(path),
+                    "size_bytes": stat.st_size,
+                    "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+                }
+            )
+    return files
+
+
+def delete_category_file(db, user: dict, category: str, file_path: str) -> tuple[bool, str]:
+    """Permanently removes a file the user picked from a category's file
+    browser -- sent to the Recycle Bin (send2trash), never a raw unlink, so
+    a wrong click is still recoverable the normal Windows way instead of
+    gone the instant the button is clicked."""
+    target = Path(file_path).resolve()
+
+    allowed = any(
+        target.parent == (root / category).resolve() for root in all_watch_folders(user)
+    )
+    if not allowed:
+        # Covers both a forged path and an honest "category" mismatch --
+        # either way, this is the one check standing between this endpoint
+        # and deleting an arbitrary file anywhere else on disk.
+        return False, "That file isn't inside one of your watched category folders."
+
+    if not target.is_file():
+        return False, "That file no longer exists."
+
+    try:
+        size_bytes = target.stat().st_size
+        send2trash(str(target))
+    except OSError as exc:
+        return False, f"Couldn't delete {target.name}: {exc}"
+
+    insert_with_id(
+        db,
+        "activity_log",
+        new_activity_log(
+            user_id=user["id"],
+            original_filename=target.name,
+            final_filename=target.name,
+            source_path=str(target),
+            destination_path=None,
+            category=category,
+            action="deleted",
+            file_size=size_bytes,
+        ),
+    )
+    return True, f"Moved {target.name} to the Recycle Bin."

@@ -8,11 +8,19 @@ const ACTION_META = {
   replaced: { label: "Organized (replaced)", color: "var(--status-good)" },
   duplicate_skipped: { label: "Duplicate skipped", color: "var(--status-warning)" },
   archived: { label: "Archived", color: "var(--text-muted)" },
+  deleted: { label: "Deleted", color: "var(--status-critical)" },
 };
+
+// Mirrors the backend's UNDOABLE_ACTIONS (automation/organizer.py) -- a row
+// whose action isn't in this list will always fail server-side (e.g. no
+// destination_path to move back), so it's left off every row's controls
+// rather than showing a button that can only ever error.
+const UNDOABLE_ACTIONS = ["moved", "renamed_and_moved", "replaced", "archived", "reclassified"];
 
 function subtitleFor(log) {
   if (log.action === "duplicate_skipped") return `Already exists in ${log.category}`;
   if (log.action === "archived") return `Archived from ${log.category}`;
+  if (log.action === "deleted") return `Deleted from ${log.category}`;
   return `Moved to ${log.category}`;
 }
 
@@ -52,6 +60,8 @@ export default function ActivityTable({
   logs,
   onUndo,
   undoing = false,
+  undoingId = null,
+  allowAnyRowUndo = false,
   showStatusBadge = false,
   onReclassify,
   categories = [],
@@ -98,15 +108,17 @@ export default function ActivityTable({
                 Completed
               </span>
             )}
-            {onUndo && i === 0 && !log.undone && (
-              <button
-                onClick={() => onUndo(log)}
-                disabled={undoing}
-                className="rounded-md border border-[var(--border)] px-2.5 py-1 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--gridline)] disabled:opacity-50"
-              >
-                {undoing ? "Undoing…" : "Undo"}
-              </button>
-            )}
+            {onUndo &&
+              !log.undone &&
+              (allowAnyRowUndo ? UNDOABLE_ACTIONS.includes(log.action) : i === 0) && (
+                <button
+                  onClick={() => onUndo(log)}
+                  disabled={allowAnyRowUndo ? undoingId === log.id : undoing}
+                  className="rounded-md border border-[var(--border)] px-2.5 py-1 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--gridline)] disabled:opacity-50"
+                >
+                  {(allowAnyRowUndo ? undoingId === log.id : undoing) ? "Undoing…" : "Undo"}
+                </button>
+              )}
             {!showStatusBadge && !onUndo && (
               <span
                 className="inline-flex items-center gap-1.5 text-xs text-[var(--text-secondary)]"

@@ -69,10 +69,18 @@ export const completeOnboarding = () =>
   api.post("/api/auth/onboarding-complete").then((r) => r.data);
 export const undoLastOperation = () =>
   api.post("/api/undo").then((r) => r.data);
+export const undoLog = (logId) =>
+  api.post(`/api/logs/${logId}/undo`).then((r) => r.data);
 export const previewRule = (type, match) =>
   api.post("/api/rules/preview", { type, match }).then((r) => r.data);
 export const reclassifyLog = (logId, category) =>
   api.post(`/api/logs/${logId}/reclassify`, { category }).then((r) => r.data);
+export const getCategoryFiles = (category) =>
+  api.get(`/api/categories/${encodeURIComponent(category)}/files`).then((r) => r.data);
+export const deleteCategoryFile = (category, path) =>
+  api
+    .delete(`/api/categories/${encodeURIComponent(category)}/files`, { data: { path } })
+    .then((r) => r.data);
 export const organizeExistingFiles = () =>
   api.post("/api/organize-existing").then((r) => r.data);
 export const simulateDownloadUrl = () => `${API_BASE}/api/simulate-download`;

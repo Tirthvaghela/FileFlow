@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { motion } from "motion/react";
 import { FolderOpen } from "lucide-react";
 import Header from "../components/Header.jsx";
@@ -46,7 +47,10 @@ export default function Categories() {
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.3, delay: Math.min(i, 8) * 0.04, ease: "easeOut" }}
-                  className="rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-5 shadow-sm transition-shadow hover:shadow-md"
+                >
+                <Link
+                  to={`/app/categories/${encodeURIComponent(cat.category)}`}
+                  className="block rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-5 shadow-sm transition-shadow hover:shadow-md hover:border-[var(--brand)]/30"
                 >
                   <div className="mb-4 flex items-start justify-between">
                     <span
@@ -77,6 +81,7 @@ export default function Categories() {
                       }}
                     />
                   </div>
+                </Link>
                 </motion.div>
               );
             })}

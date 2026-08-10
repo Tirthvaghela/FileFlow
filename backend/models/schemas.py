@@ -135,6 +135,22 @@ class CategorySizeStat(BaseModel):
     size_bytes: int
 
 
+class CategoryFileOut(BaseModel):
+    name: str
+    path: str
+    size_bytes: int
+    modified_at: datetime
+
+
+class CategoryFileDeleteRequest(BaseModel):
+    path: str
+
+
+class DeleteResult(BaseModel):
+    success: bool
+    message: str
+
+
 class WeeklyReportStat(BaseModel):
     week_start: str
     week_end: str

@@ -213,6 +213,133 @@ class TestUndo:
         assert body["log"] is None
 
 
+class TestUndoSpecificLog:
+    def test_undoes_a_specific_row_by_id(self, client, watch_folder, db_session):
+        source = watch_folder / "notes.txt"
+        source.write_text("hi")
+        client.post("/api/organize-existing")
+        log = db_session.activity_log.find_one(sort=[("_id", -1)])
+
+        resp = client.post(f"/api/logs/{log['id']}/undo")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["success"] is True
+        assert source.exists()
+        assert not (watch_folder / log["category"] / "notes.txt").exists()
+
+    def test_unknown_log_id_fails_gracefully(self, client):
+        resp = client.post("/api/logs/999999/undo")
+
+        assert resp.status_code == 200
+        assert resp.json()["success"] is False
+
+    def test_can_undo_an_older_row_without_touching_a_newer_one(
+        self, client, watch_folder, db_session
+    ):
+        # Two independently organized files -- undoing the FIRST one
+        # specifically must leave the second alone, unlike the LIFO-only
+        # /api/undo endpoint which can only ever reach the most recent row.
+        first = watch_folder / "first.txt"
+        first.write_text("1")
+        client.post("/api/organize-existing")
+        first_log = db_session.activity_log.find_one(sort=[("_id", -1)])
+
+        second = watch_folder / "second.txt"
+        second.write_text("2")
+        client.post("/api/organize-existing")
+        second_log = db_session.activity_log.find_one(sort=[("_id", -1)])
+
+        resp = client.post(f"/api/logs/{first_log['id']}/undo")
+
+        assert resp.json()["success"] is True
+        assert first.exists()
+        assert (watch_folder / second_log["category"] / "second.txt").exists()
+
+    def test_cannot_undo_the_same_row_twice(self, client, watch_folder, db_session):
+        source = watch_folder / "notes.txt"
+        source.write_text("hi")
+        client.post("/api/organize-existing")
+        log = db_session.activity_log.find_one(sort=[("_id", -1)])
+
+        client.post(f"/api/logs/{log['id']}/undo")
+        resp = client.post(f"/api/logs/{log['id']}/undo")
+
+        assert resp.json()["success"] is False
+
+
+class TestCategoryFiles:
+    def test_lists_files_in_a_category_folder(self, client, watch_folder):
+        (watch_folder / "Documents").mkdir()
+        (watch_folder / "Documents" / "a.pdf").write_text("aaaa")
+        (watch_folder / "Documents" / "b.pdf").write_text("b")
+
+        resp = client.get("/api/categories/Documents/files")
+
+        assert resp.status_code == 200
+        names = {f["name"] for f in resp.json()}
+        assert names == {"a.pdf", "b.pdf"}
+
+    def test_sorted_largest_first_by_default(self, client, watch_folder):
+        (watch_folder / "Documents").mkdir()
+        (watch_folder / "Documents" / "small.pdf").write_text("a")
+        (watch_folder / "Documents" / "big.pdf").write_text("a" * 100)
+
+        resp = client.get("/api/categories/Documents/files")
+
+        names = [f["name"] for f in resp.json()]
+        assert names == ["big.pdf", "small.pdf"]
+
+    def test_empty_or_missing_category_returns_empty_list(self, client):
+        resp = client.get("/api/categories/NoSuchCategory/files")
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_deletes_a_file_and_logs_it(self, client, watch_folder, db_session):
+        (watch_folder / "Documents").mkdir()
+        target = watch_folder / "Documents" / "old.pdf"
+        target.write_text("bye")
+
+        resp = client.request(
+            "DELETE", "/api/categories/Documents/files", json={"path": str(target)}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+        assert not target.exists()
+        log = db_session.activity_log.find_one(sort=[("_id", -1)])
+        assert log["action"] == "deleted"
+        assert log["category"] == "Documents"
+
+    def test_rejects_a_path_outside_any_watched_category_folder(self, client, tmp_path):
+        outside = tmp_path / "outside" / "evil.txt"
+        outside.parent.mkdir()
+        outside.write_text("do not delete me")
+
+        resp = client.request(
+            "DELETE", "/api/categories/Documents/files", json={"path": str(outside)}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["success"] is False
+        assert outside.exists()
+
+    def test_rejects_a_path_traversal_attempt(self, client, watch_folder):
+        (watch_folder / "Documents").mkdir()
+        real_file_elsewhere = watch_folder / "secret.txt"
+        real_file_elsewhere.write_text("do not delete me")
+        traversal_path = str(watch_folder / "Documents" / ".." / "secret.txt")
+
+        resp = client.request(
+            "DELETE", "/api/categories/Documents/files", json={"path": traversal_path}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["success"] is False
+        assert real_file_elsewhere.exists()
+
+
 class TestRulePreview:
     def test_returns_matched_count_and_grouped_categories(self, client, db_session):
         _log(db_session, original_filename="a.psd", category="Design")
