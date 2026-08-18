@@ -42,8 +42,8 @@ FileFlow automatically performs the following tasks whenever a new file is downl
 
 - Detects new files in real time
 - Identifies the file type
-- Applies user-defined automation rules
-- Detects duplicate files
+- Applies user-defined esautomation rules
+- Detects duplicate fil
 - Automatically renames duplicate files
 - Creates destination folders if required
 - Moves files into appropriate folders (optionally via a real UiPath Robot)
