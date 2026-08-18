@@ -108,5 +108,7 @@
   "desktop_notifications_enabled": true,
   "duplicate_handling": "rename",
   "scheduled_organize_enabled": false,
-  "scheduled_organize_time": "02:00"
+  "scheduled_organize_time": "02:00",
+  "recycle_bin_retention_days": 30,
+  "storage_alert_threshold_gb": 0
 }

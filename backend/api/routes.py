@@ -38,6 +38,7 @@ from models.schemas import (
     RulePreviewOut,
     RulePreviewRequest,
     RulesOut,
+    RuleSimulationResult,
     StatsOut,
     UndoResult,
     WatchFolderOut,
@@ -52,6 +53,7 @@ from services.digest_service import send_weekly_digest
 from services.report_service import build_csv, build_excel, build_pdf
 from services.agent_service import enqueue_agent_command, is_agent_connected
 from services.rule_preview_service import preview_rule
+from services.rule_simulation_service import simulate_rules
 from services.stats_service import get_category_sizes, get_stats, get_weekly_reports
 
 # Every route on this router requires a valid session -- /api/health and
@@ -316,6 +318,17 @@ def rules_preview(
     """Read-only: shows which already-organized files a not-yet-saved rule
     would have matched. Never touches the filesystem or rules.json."""
     return preview_rule(db, user["id"], request.type, request.match)
+
+
+@router.post("/rules/simulate", response_model=RuleSimulationResult)
+def rules_simulate(
+    candidate_rules: RulesOut, db=Depends(get_db), user=Depends(get_current_user)
+):
+    """Read-only dry-run: re-classifies recent history against a full
+    not-yet-saved rule set (the same shape PUT /api/rules accepts) and
+    reports which files would now land somewhere different. Never calls
+    RuleEngine.save() or touches a file."""
+    return simulate_rules(db, user, candidate_rules.model_dump())
 
 
 @router.post("/logs/{log_id}/reclassify", response_model=ReclassifyResult)

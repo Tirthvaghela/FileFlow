@@ -8,6 +8,7 @@ import pytest
 
 from scheduler import archive_scheduler
 from scheduler.archive_scheduler import archive_old_files, run_scheduled_organizes
+from services.storage_threshold_service import check_all_storage_thresholds
 
 
 class _FrozenClock:
@@ -210,3 +211,75 @@ class TestScheduledOrganize:
         command = scheduler_db.agent_commands.find_one({"user_id": 1, "type": "organize_existing"})
         assert command is not None
         assert command["status"] == "pending"
+
+
+class TestStorageThreshold:
+    def test_does_nothing_when_no_threshold_configured(self, test_rules, watch_folder, scheduler_db):
+        f = watch_folder / "Documents" / "small.pdf"
+        f.parent.mkdir(parents=True)
+        f.write_text("hi")
+
+        check_all_storage_thresholds(scheduler_db)
+
+        assert f.exists()
+        assert scheduler_db.activity_log.count_documents({"action": "archived"}) == 0
+
+    def test_does_nothing_below_threshold(self, test_rules, watch_folder, scheduler_db):
+        test_rules["storage_alert_threshold_gb"] = 1
+        f = watch_folder / "Documents" / "small.pdf"
+        f.parent.mkdir(parents=True)
+        f.write_text("hi")
+
+        check_all_storage_thresholds(scheduler_db)
+
+        assert f.exists()
+        assert scheduler_db.activity_log.count_documents({"action": "archived"}) == 0
+
+    def test_archives_only_the_oldest_file_needed_to_drop_back_under_threshold(
+        self, test_rules, watch_folder, scheduler_db
+    ):
+        folder = watch_folder / "Documents"
+        folder.mkdir(parents=True)
+        old = folder / "old.pdf"
+        old.write_text("a" * 1000)
+        _age(old, days=10)
+        newer = folder / "newer.pdf"
+        newer.write_text("a" * 1000)
+        _age(newer, days=1)
+        test_rules["storage_alert_threshold_gb"] = 1500 / (1024**3)
+
+        check_all_storage_thresholds(scheduler_db)
+
+        assert not old.exists()
+        assert (watch_folder / "Archive" / "old.pdf").exists()
+        assert newer.exists()
+        log = scheduler_db.activity_log.find_one({"action": "archived"})
+        assert log["original_filename"] == "old.pdf"
+
+    def test_skips_the_configured_archive_folder_itself(self, test_rules, watch_folder, scheduler_db):
+        test_rules["storage_alert_threshold_gb"] = 1000 / (1024**3)
+        archive = watch_folder / "Archive"
+        archive.mkdir(parents=True)
+        (archive / "already_archived.pdf").write_text("a" * 2000)
+
+        check_all_storage_thresholds(scheduler_db)
+
+        assert (archive / "already_archived.pdf").exists()
+        assert scheduler_db.activity_log.count_documents({"action": "archived"}) == 0
+
+    def test_sends_a_notification_describing_what_happened(
+        self, test_rules, watch_folder, scheduler_db, monkeypatch
+    ):
+        import services.storage_threshold_service as svc
+
+        calls = []
+        monkeypatch.setattr(svc, "notify", lambda title, message, rules: calls.append(message))
+        folder = watch_folder / "Documents"
+        folder.mkdir(parents=True)
+        (folder / "big.pdf").write_text("a" * 2000)
+        test_rules["storage_alert_threshold_gb"] = 1000 / (1024**3)
+
+        check_all_storage_thresholds(scheduler_db)
+
+        assert len(calls) == 1
+        assert "Documents" in calls[0]

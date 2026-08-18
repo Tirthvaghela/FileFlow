@@ -20,8 +20,9 @@ export default function CategoryDetail() {
   const navigate = useNavigate();
   const [files, setFiles] = useState(null);
   const [sortKey, setSortKey] = useState("largest");
-  const [pendingDelete, setPendingDelete] = useState(null);
-  const [deletingPath, setDeletingPath] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null); // array of file objects, or null
+  const [deletingPaths, setDeletingPaths] = useState(() => new Set());
+  const [selectedPaths, setSelectedPaths] = useState(() => new Set());
   const [error, setError] = useState("");
 
   function load() {
@@ -32,32 +33,62 @@ export default function CategoryDetail() {
 
   useEffect(() => {
     setFiles(null);
+    setSelectedPaths(new Set());
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [category]);
 
   async function confirmDelete() {
-    const file = pendingDelete;
+    const targets = pendingDelete;
     setPendingDelete(null);
-    setDeletingPath(file.path);
+    setDeletingPaths(new Set(targets.map((f) => f.path)));
     setError("");
     try {
-      const result = await deleteCategoryFile(category, file.path);
-      if (result.success) {
-        setFiles((current) => current.filter((f) => f.path !== file.path));
-      } else {
-        setError(result.message);
+      const results = await Promise.allSettled(
+        targets.map((f) => deleteCategoryFile(category, f.path))
+      );
+      const deletedPaths = new Set();
+      const failures = [];
+      targets.forEach((f, i) => {
+        const r = results[i];
+        if (r.status === "fulfilled" && r.value.success) deletedPaths.add(f.path);
+        else failures.push(f.name);
+      });
+      if (deletedPaths.size) {
+        setFiles((current) => current.filter((f) => !deletedPaths.has(f.path)));
+        setSelectedPaths((current) => {
+          const next = new Set(current);
+          deletedPaths.forEach((p) => next.delete(p));
+          return next;
+        });
+      }
+      if (failures.length) {
+        setError(
+          failures.length === targets.length
+            ? "Couldn't delete the selected file(s)."
+            : `Couldn't delete: ${failures.join(", ")}`
+        );
       }
     } catch {
-      setError("Couldn't delete that file.");
+      setError("Couldn't delete the selected file(s).");
     } finally {
-      setDeletingPath(null);
+      setDeletingPaths(new Set());
     }
+  }
+
+  function toggleSelect(path) {
+    setSelectedPaths((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
   }
 
   const color = buildCategoryColorMap([category])[category];
   const sorted = files ? [...files].sort(SORTS[sortKey].compare) : [];
   const totalSize = files ? files.reduce((sum, f) => sum + f.size_bytes, 0) : 0;
+  const allSelected = sorted.length > 0 && selectedPaths.size === sorted.length;
 
   return (
     <>
@@ -112,6 +143,42 @@ export default function CategoryDetail() {
             </p>
           )}
 
+          {files && files.length > 0 && (
+            <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--page)] px-3 py-2 text-xs">
+              <label className="flex items-center gap-2 font-medium text-[var(--text-secondary)]">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={() =>
+                    setSelectedPaths(allSelected ? new Set() : new Set(sorted.map((f) => f.path)))
+                  }
+                  className="h-4 w-4 rounded border-[var(--border)] accent-[var(--brand)]"
+                />
+                Select all
+              </label>
+              {selectedPaths.size > 0 && (
+                <>
+                  <span className="text-[var(--text-muted)]">{selectedPaths.size} selected</span>
+                  <button
+                    onClick={() =>
+                      setPendingDelete(sorted.filter((f) => selectedPaths.has(f.path)))
+                    }
+                    className="flex items-center gap-1 rounded-md border border-[var(--status-critical)]/30 px-2.5 py-1 font-medium text-[var(--status-critical)] hover:bg-[var(--status-critical)]/10"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    Delete selected ({selectedPaths.size})
+                  </button>
+                  <button
+                    onClick={() => setSelectedPaths(new Set())}
+                    className="ml-auto text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  >
+                    Clear
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
           {files === null ? (
             <p className="py-8 text-center text-sm text-[var(--text-muted)]">Loading…</p>
           ) : files.length === 0 ? (
@@ -131,6 +198,13 @@ export default function CategoryDetail() {
                     transition={{ duration: 0.2 }}
                     className="flex items-center gap-3 py-3"
                   >
+                    <input
+                      type="checkbox"
+                      checked={selectedPaths.has(file.path)}
+                      onChange={() => toggleSelect(file.path)}
+                      className="h-4 w-4 shrink-0 rounded border-[var(--border)] accent-[var(--brand)]"
+                      aria-label={`Select ${file.name}`}
+                    />
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-medium text-[var(--text-primary)]">
                         {file.name}
@@ -150,8 +224,8 @@ export default function CategoryDetail() {
                       {formatBytes(file.size_bytes)}
                     </span>
                     <button
-                      onClick={() => setPendingDelete(file)}
-                      disabled={deletingPath === file.path}
+                      onClick={() => setPendingDelete([file])}
+                      disabled={deletingPaths.has(file.path)}
                       title="Move to Recycle Bin"
                       className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--status-critical)]/10 hover:text-[var(--status-critical)] disabled:opacity-50"
                     >
@@ -168,8 +242,12 @@ export default function CategoryDetail() {
       <ConfirmDialog
         open={pendingDelete !== null}
         onOpenChange={(open) => !open && setPendingDelete(null)}
-        title={`Delete "${pendingDelete?.name}"?`}
-        description="Moves this file to the Recycle Bin -- you can restore it from there if this was a mistake. It won't be tracked by FileFlow anymore."
+        title={
+          pendingDelete?.length === 1
+            ? `Delete "${pendingDelete[0].name}"?`
+            : `Delete ${pendingDelete?.length ?? 0} files?`
+        }
+        description="Moves the file(s) to the Recycle Bin -- you can restore them from there if this was a mistake. They won't be tracked by FileFlow anymore."
         confirmLabel="Move to Recycle Bin"
         variant="destructive"
         onConfirm={confirmDelete}

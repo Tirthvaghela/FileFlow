@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Header from "../components/Header.jsx";
 import ConfirmDialog from "../components/ui/ConfirmDialog.jsx";
 import Toggle from "../components/ui/Toggle.jsx";
-import { Calendar, Download, FileSearch, Folder, Pencil, Regex, Ruler, Upload, X } from "lucide-react";
+import { Calendar, Download, FileSearch, FlaskConical, Folder, Pencil, Regex, Ruler, Upload, X } from "lucide-react";
 import { buildCategoryColorMap, collectKnownFolders } from "../utils/categoryMeta.js";
-import { previewRule } from "../services/api.js";
+import { previewRule, simulateRules } from "../services/api.js";
 import { useRules } from "../context/RulesContext.jsx";
 import { Flip, gsap, useGSAP } from "../lib/gsap.js";
 
@@ -69,7 +69,21 @@ export default function Rules() {
   const [addingRule, setAddingRule] = useState(false);
   const [pendingImport, setPendingImport] = useState(null);
   const [importError, setImportError] = useState("");
+  const [simulation, setSimulation] = useState(null);
+  const [simulating, setSimulating] = useState(false);
   const fileInputRef = useRef(null);
+
+  async function handleSimulate() {
+    setSimulating(true);
+    try {
+      const result = await simulateRules(rules);
+      setSimulation(result);
+    } catch {
+      setSimulation({ error: true });
+    } finally {
+      setSimulating(false);
+    }
+  }
 
   // Debounced dry-run: shows which already-organized files this not-yet-
   // saved rule would have matched, so a typo (e.g. "invoic") is obvious
@@ -488,7 +502,62 @@ export default function Rules() {
           <Download className="h-3.5 w-3.5" />
           Export
         </button>
+        <button
+          type="button"
+          onClick={handleSimulate}
+          disabled={simulating}
+          title="See what your current rules would classify differently than what's on record"
+          className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface-1)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--gridline)] disabled:opacity-50"
+        >
+          <FlaskConical className="h-3.5 w-3.5" />
+          {simulating ? "Checking…" : "Check impact"}
+        </button>
       </div>
+
+      {simulation && (
+        <div className="mx-8 mt-4 rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-4 shadow-sm">
+          {simulation.error ? (
+            <p className="text-sm text-[var(--status-critical)]">Couldn't check rule impact. Try again.</p>
+          ) : (
+            <>
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-sm font-medium text-[var(--text-primary)]">
+                  {simulation.compared_count - simulation.unchanged_count === 0
+                    ? `No changes — matches what's on record for the last ${simulation.compared_count} organized file${simulation.compared_count === 1 ? "" : "s"}.`
+                    : `${simulation.compared_count - simulation.unchanged_count} of ${simulation.compared_count} recent files would be reclassified differently:`}
+                </h3>
+                <button
+                  onClick={() => setSimulation(null)}
+                  className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              {simulation.changes.length > 0 && (
+                <div className="max-h-64 space-y-1.5 overflow-y-auto">
+                  {simulation.changes.map((c, i) => (
+                    <div
+                      key={`${c.filename}-${i}`}
+                      className="flex items-center justify-between rounded-lg bg-[var(--page)] px-3 py-2 text-xs"
+                    >
+                      <span className="truncate font-medium text-[var(--text-primary)]">{c.filename}</span>
+                      <span className="shrink-0 text-[var(--text-secondary)]">
+                        {c.previous_category} → <span className="font-medium">{c.new_category}</span>
+                      </span>
+                    </div>
+                  ))}
+                  {simulation.compared_count - simulation.unchanged_count > simulation.changes.length && (
+                    <p className="pt-1 text-center text-xs text-[var(--text-muted)]">
+                      Showing the first {simulation.changes.length} changes.
+                    </p>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-6 p-8 lg:grid-cols-[1fr_320px]">
         <div ref={cardsRef} className="space-y-3">
           {extensionCards.map(({ ext, folder, enabled }) => (

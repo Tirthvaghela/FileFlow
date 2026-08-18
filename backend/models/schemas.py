@@ -103,6 +103,8 @@ class RulesOut(BaseModel):
     duplicate_handling: str = "rename"
     scheduled_organize_enabled: bool = False
     scheduled_organize_time: str = "02:00"
+    recycle_bin_retention_days: int = Field(default=30, ge=1)
+    storage_alert_threshold_gb: float = Field(default=0, ge=0)
 
     @field_validator("scheduled_organize_time")
     @classmethod
@@ -149,6 +151,19 @@ class CategoryFileDeleteRequest(BaseModel):
 class DeleteResult(BaseModel):
     success: bool
     message: str
+
+
+class RuleSimulationChange(BaseModel):
+    filename: str
+    file_size_bytes: int
+    previous_category: str
+    new_category: str
+
+
+class RuleSimulationResult(BaseModel):
+    compared_count: int
+    unchanged_count: int
+    changes: list[RuleSimulationChange]
 
 
 class WeeklyReportStat(BaseModel):

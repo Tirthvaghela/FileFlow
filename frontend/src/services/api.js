@@ -73,6 +73,8 @@ export const undoLog = (logId) =>
   api.post(`/api/logs/${logId}/undo`).then((r) => r.data);
 export const previewRule = (type, match) =>
   api.post("/api/rules/preview", { type, match }).then((r) => r.data);
+export const simulateRules = (candidateRules) =>
+  api.post("/api/rules/simulate", candidateRules).then((r) => r.data);
 export const reclassifyLog = (logId, category) =>
   api.post(`/api/logs/${logId}/reclassify`, { category }).then((r) => r.data);
 export const getCategoryFiles = (category) =>

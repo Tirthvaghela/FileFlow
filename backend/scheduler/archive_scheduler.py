@@ -12,6 +12,8 @@ from models.models import new_activity_log
 from rules.rule_engine import get_rule_engine, is_within_watch_folder
 from services.agent_service import enqueue_agent_command, is_agent_connected
 from services.digest_service import send_weekly_digest
+from services.recycle_bin_service import purge_all_users_recycle_bins
+from services.storage_threshold_service import check_all_storage_thresholds
 
 logger = logging.getLogger("fileflow.archive")
 
@@ -170,6 +172,14 @@ def run_scheduled_organizes() -> None:
             logger.exception("Scheduled organize failed for user %d -- skipping.", user["id"])
 
 
+def run_recycle_bin_purge() -> int:
+    return purge_all_users_recycle_bins(db)
+
+
+def run_storage_threshold_check() -> None:
+    check_all_storage_thresholds(db)
+
+
 def start_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler()
     scheduler.add_job(
@@ -177,6 +187,20 @@ def start_scheduler() -> BackgroundScheduler:
         "interval",
         hours=settings.ARCHIVE_CHECK_INTERVAL_HOURS,
         id="archive_old_files",
+        next_run_time=None,
+    )
+    scheduler.add_job(
+        run_recycle_bin_purge,
+        "interval",
+        hours=settings.ARCHIVE_CHECK_INTERVAL_HOURS,
+        id="recycle_bin_purge",
+        next_run_time=None,
+    )
+    scheduler.add_job(
+        run_storage_threshold_check,
+        "interval",
+        hours=settings.ARCHIVE_CHECK_INTERVAL_HOURS,
+        id="storage_threshold_check",
         next_run_time=None,
     )
     if settings.WEEKLY_DIGEST_ENABLED:

@@ -16,3 +16,5 @@ pyotp==2.10.0
 qrcode==8.2
 Pillow==12.3.0
 Send2Trash==2.1.0
+pywin32==312; sys_platform == "win32"
+winshell==0.6; sys_platform == "win32"

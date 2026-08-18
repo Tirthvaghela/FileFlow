@@ -65,6 +65,9 @@ export default function ActivityTable({
   showStatusBadge = false,
   onReclassify,
   categories = [],
+  selectable = false,
+  selectedIds = null,
+  onToggleSelect = null,
 }) {
   if (!logs.length) {
     return (
@@ -81,6 +84,16 @@ export default function ActivityTable({
         const meta = ACTION_META[log.action] || { label: log.action, color: "var(--text-muted)" };
         return (
           <div key={log.id} className="flex items-center gap-3 py-3">
+            {selectable && !log.undone && (
+              <input
+                type="checkbox"
+                checked={selectedIds?.has(log.id) ?? false}
+                onChange={() => onToggleSelect?.(log.id)}
+                className="h-4 w-4 shrink-0 rounded border-[var(--border)] accent-[var(--brand)]"
+                aria-label={`Select ${log.final_filename}`}
+              />
+            )}
+            {selectable && log.undone && <span className="w-4 shrink-0" />}
             <FileBadge log={log} />
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-medium text-[var(--text-primary)]">

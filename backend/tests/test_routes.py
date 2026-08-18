@@ -362,6 +362,55 @@ class TestRulePreview:
         assert before == after
 
 
+class TestRuleSimulate:
+    def test_reports_no_changes_for_an_identical_rule_set(self, client, test_rules, db_session):
+        _log(db_session, original_filename="a.pdf", category="Documents")
+
+        resp = client.post("/api/rules/simulate", json=test_rules)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["compared_count"] == 1
+        assert body["unchanged_count"] == 1
+        assert body["changes"] == []
+
+    def test_reports_a_file_that_would_now_be_classified_differently(
+        self, client, test_rules, db_session
+    ):
+        _log(db_session, original_filename="report.psd", final_filename="report.psd", category="Others")
+        candidate = {**test_rules, "extension_rules": {**test_rules["extension_rules"], ".psd": "Design"}}
+
+        resp = client.post("/api/rules/simulate", json=candidate)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["compared_count"] == 1
+        assert body["unchanged_count"] == 0
+        assert body["changes"] == [
+            {
+                "filename": "report.psd",
+                "file_size_bytes": 100,
+                "previous_category": "Others",
+                "new_category": "Design",
+            }
+        ]
+
+    def test_never_saves_the_candidate_rules(self, client, test_rules, db_session):
+        candidate = {**test_rules, "extension_rules": {**test_rules["extension_rules"], ".psd": "Design"}}
+
+        client.post("/api/rules/simulate", json=candidate)
+
+        get_resp = client.get("/api/rules")
+        assert ".psd" not in get_resp.json()["extension_rules"]
+
+    def test_excludes_deleted_rows_from_the_comparison(self, client, test_rules, db_session):
+        _log(db_session, action="deleted", original_filename="gone.pdf", category="Documents")
+
+        resp = client.post("/api/rules/simulate", json=test_rules)
+
+        assert resp.json()["compared_count"] == 0
+
+
 class TestReclassify:
     def test_moves_the_file_and_returns_the_new_log(self, client, watch_folder, db_session):
         source = watch_folder / "notes.txt"

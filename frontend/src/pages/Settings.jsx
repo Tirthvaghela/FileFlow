@@ -567,6 +567,45 @@ export default function Settings() {
             />
           </div>
 
+          <div className="mb-5">
+            <div className="mb-2 flex items-center justify-between text-sm">
+              <span className="text-[var(--text-secondary)]">Empty Recycle Bin entries after</span>
+              <span className="font-medium text-[var(--brand)]">
+                {rules.recycle_bin_retention_days} days
+              </span>
+            </div>
+            <Slider
+              min={1}
+              max={90}
+              value={rules.recycle_bin_retention_days}
+              onChange={(v) => save({ recycle_bin_retention_days: v })}
+            />
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              Only files FileFlow itself sent to the Recycle Bin (via Categories → Delete) are ever permanently purged, and only after sitting this long.
+            </p>
+          </div>
+
+          <div className="mb-5">
+            <div className="mb-2 flex items-center justify-between text-sm">
+              <span className="text-[var(--text-secondary)]">Alert when a category exceeds</span>
+              <span className="font-medium text-[var(--brand)]">
+                {rules.storage_alert_threshold_gb > 0
+                  ? `${rules.storage_alert_threshold_gb} GB`
+                  : "Disabled"}
+              </span>
+            </div>
+            <Slider
+              min={0}
+              max={50}
+              step={0.5}
+              value={rules.storage_alert_threshold_gb}
+              onChange={(v) => save({ storage_alert_threshold_gb: v })}
+            />
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              When a category folder crosses this size, FileFlow notifies you and automatically archives its oldest files to bring it back down. 0 disables this.
+            </p>
+          </div>
+
           <label className="mb-4 block text-sm text-[var(--text-secondary)]">
             Archive folder name
             <input
