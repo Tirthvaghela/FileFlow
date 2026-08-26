@@ -95,4 +95,36 @@ describe("History undo/reclassify failure handling", () => {
 
     expect(await screen.findByText("Restored to its original location.")).toBeInTheDocument();
   });
+
+  it("does not fire a second 'undo last' request from a rapid double-click", async () => {
+    mockGetAgentCommands.mockResolvedValue([]);
+    // This mock is shared (module-level) across every test in this describe
+    // block and isn't auto-reset between them -- clear its call count so
+    // this test's assertion isn't polluted by earlier tests' clicks.
+    mockUndoLastOperation.mockClear();
+    let resolveUndo;
+    mockUndoLastOperation.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveUndo = resolve;
+      }),
+    );
+    renderHistory();
+
+    await screen.findByText("report.pdf");
+    const undoLastButton = screen.getByRole("button", { name: /undo last operation/i });
+    // The backend's atomic claim guarantees two concurrent "undo last" calls
+    // each undo a DIFFERENT row (the two most recent) -- so an unguarded
+    // double-click doesn't collide, it silently undoes two operations
+    // instead of the one the user intended. The button must disable itself
+    // the instant the first request is in flight.
+    fireEvent.click(undoLastButton);
+    await waitFor(() => expect(undoLastButton).toBeDisabled());
+    fireEvent.click(undoLastButton);
+    fireEvent.click(undoLastButton);
+
+    expect(mockUndoLastOperation).toHaveBeenCalledTimes(1);
+
+    resolveUndo({ success: true, message: "Restored to its original location." });
+    await waitFor(() => expect(undoLastButton).toBeEnabled());
+  });
 });

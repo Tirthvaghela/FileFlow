@@ -73,3 +73,33 @@ describe("Reports page exports", () => {
     await waitFor(() => expect(pdfLink.getAttribute("href")).toBe("/api/reports/pdf"));
   });
 });
+
+describe("Reports loading state", () => {
+  it("shows a loading indicator while the initial fetch is pending, not the empty state", async () => {
+    const { getWeeklyReports } = await import("../services/api.js");
+    let resolveWeekly;
+    getWeeklyReports.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveWeekly = resolve;
+      }),
+    );
+    renderReports();
+
+    // A user with plenty of history must not see "No activity yet." just
+    // because the request hasn't resolved yet -- that's indistinguishable
+    // from a genuinely empty account.
+    expect(screen.getByText(/loading/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no activity yet/i)).not.toBeInTheDocument();
+
+    resolveWeekly(weekly);
+    await waitFor(() => expect(screen.queryByText(/loading/i)).not.toBeInTheDocument());
+  });
+
+  it("still shows the empty state once the fetch resolves with no data (non-regression)", async () => {
+    const { getWeeklyReports } = await import("../services/api.js");
+    getWeeklyReports.mockResolvedValueOnce([]);
+    renderReports();
+
+    expect(await screen.findByText(/no activity yet/i)).toBeInTheDocument();
+  });
+});

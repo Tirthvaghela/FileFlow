@@ -21,10 +21,16 @@ export default function History() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [undoingId, setUndoingId] = useState(null);
+  const [undoingLast, setUndoingLast] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
 
   async function handleUndoLast() {
+    // Same reasoning as Dashboard's handleUndo: the backend only guards two
+    // calls racing on the *same* undo, so an unguarded second click here
+    // would undo the next operation back too, not just retry the first.
+    if (undoingLast) return;
+    setUndoingLast(true);
     setError("");
     try {
       const result = await undoLastOperation();
@@ -34,6 +40,8 @@ export default function History() {
     } catch {
       setMessage("");
       setError("Couldn't undo the last operation -- try again.");
+    } finally {
+      setUndoingLast(false);
     }
   }
 
@@ -184,10 +192,11 @@ export default function History() {
             </div>
             <button
               onClick={handleUndoLast}
-              className="flex items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--gridline)]"
+              disabled={undoingLast}
+              className="flex items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--gridline)] disabled:opacity-50"
             >
               <Undo2 className="h-3.5 w-3.5" />
-              Undo last operation
+              {undoingLast ? "Undoing…" : "Undo last operation"}
             </button>
           </div>
 

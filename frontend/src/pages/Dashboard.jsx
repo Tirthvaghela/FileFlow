@@ -32,8 +32,10 @@ export default function Dashboard() {
   const [categoryStats, setCategoryStats] = useState(null);
   const watchFolder = user?.watch_folder || "";
   const [actionMessage, setActionMessage] = useState("");
+  const [actionError, setActionError] = useState("");
   const [organizing, setOrganizing] = useState(false);
   const [organizeResult, setOrganizeResult] = useState(null);
+  const [organizeError, setOrganizeError] = useState("");
   const [thisWeek, setThisWeek] = useState(null);
   const [confirmOrganize, setConfirmOrganize] = useState(false);
   const [undoing, setUndoing] = useState(false);
@@ -72,31 +74,44 @@ export default function Dashboard() {
     // back too. Ignore any click that lands while the first is in flight.
     if (undoing) return;
     setUndoing(true);
+    setActionError("");
     try {
       const result = await undoLastOperation();
       setActionMessage(result.message);
       refresh();
       loadStats();
+    } catch {
+      setActionMessage("");
+      setActionError("Couldn't undo the last operation -- try again.");
     } finally {
       setUndoing(false);
     }
   }
 
   async function handleReclassify(log, category) {
-    const result = await reclassifyLog(log.id, category);
-    setActionMessage(result.message);
-    refresh();
-    loadStats();
+    setActionError("");
+    try {
+      const result = await reclassifyLog(log.id, category);
+      setActionMessage(result.message);
+      refresh();
+      loadStats();
+    } catch {
+      setActionMessage("");
+      setActionError("Couldn't reclassify that file -- try again.");
+    }
   }
 
   async function runOrganizeExisting() {
     setOrganizing(true);
     setOrganizeResult(null);
+    setOrganizeError("");
     try {
       const result = await organizeExistingFiles();
       setOrganizeResult(result);
       refresh();
       loadStats();
+    } catch {
+      setOrganizeError("Couldn't organize existing files -- try again.");
     } finally {
       setOrganizing(false);
     }
@@ -247,6 +262,11 @@ export default function Dashboard() {
               {organizing ? "Organizing…" : "Organize existing files now"}
             </motion.button>
           </div>
+          {organizeError && (
+            <p className="mt-3 text-xs font-medium text-[var(--status-critical)]">
+              {organizeError}
+            </p>
+          )}
           {organizeResult && organizeResult.queued && (
             <p className="mt-3 text-xs text-[var(--text-secondary)]">
               Queued — your agent will pick this up shortly.
@@ -311,6 +331,11 @@ export default function Dashboard() {
                 View all
               </Link>
             </div>
+            {actionError && (
+              <p className="mb-2 text-xs font-medium text-[var(--status-critical)]">
+                {actionError}
+              </p>
+            )}
             {actionMessage && (
               <p className="mb-2 text-xs text-[var(--text-muted)]">{actionMessage}</p>
             )}

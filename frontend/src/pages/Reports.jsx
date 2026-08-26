@@ -111,7 +111,9 @@ export default function Reports() {
               Export full history (Excel)
             </a>
           </div>
-          {!weekly || weekly.length === 0 ? (
+          {weekly === null ? (
+            <p className="py-8 text-center text-sm text-[var(--text-muted)]">Loading…</p>
+          ) : weekly.length === 0 ? (
             <EmptyState icon={FileX} message="No activity yet." />
           ) : (
             <div className="overflow-x-auto">
