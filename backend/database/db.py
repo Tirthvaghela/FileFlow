@@ -72,3 +72,30 @@ def init_db(database=None) -> None:
         unique=True,
         partialFilterExpression={"client_ref": {"$exists": True}},
     )
+    # Reclassify's agent-connected path (api/routes.py) has no equivalent
+    # to undo's atomic claim_undoable_log -- it's a plain find_one, then
+    # enqueue_agent_command(). Two concurrent reclassify requests for the
+    # same log_id both used to pass that check and both enqueue their own
+    # "reclassify" command -- verified directly with a real threaded
+    # concurrency test: both requests reported success and two pending
+    # commands existed for the same row. When the agent later processes
+    # both, the second (now-redundant) one fails since its source file is
+    # already gone, and useCommandStatusByLogId's newest-wins merge then
+    # shows the user "Failed" for a reclassify that actually succeeded.
+    # A partial unique index -- same technique as client_ref above -- makes
+    # "one pending reclassify command per (user, log_id)" a real guarantee
+    # instead of a racy check-then-act.
+    #
+    # type: "reclassify" is part of the partial filter, not just status --
+    # organize_existing/undo commands' payloads never carry log_id at all,
+    # and MongoDB indexes a missing field as null, so without restricting
+    # to reclassify specifically, two ordinary concurrent organize_existing
+    # commands for the same user (both lacking payload.log_id, both
+    # indexed as the same (user_id, null) key) would collide on this same
+    # index -- confirmed directly: this broke four unrelated, pre-existing
+    # organize_existing tests before the type filter was added.
+    database.agent_commands.create_index(
+        [("user_id", 1), ("payload.log_id", 1)],
+        unique=True,
+        partialFilterExpression={"status": "pending", "type": "reclassify"},
+    )
