@@ -152,7 +152,26 @@ def bump_failure(conn: sqlite3.Connection, item_id: int) -> None:
 
 def _is_client_error(exc: requests.exceptions.RequestException) -> bool:
     response = getattr(exc, "response", None)
-    return response is not None and 400 <= response.status_code < 500
+    if response is None:
+        return False
+    # 401 (expired -- AGENT_TOKEN_EXPIRY is 365 days, a real eventual
+    # occurrence -- or revoked via Settings' "regenerate token") and 403
+    # (a read-only-scoped token attempting a write action) both mean this
+    # AGENT currently lacks a valid/sufficiently-scoped token -- an
+    # externally recoverable condition (reconfigure with a fresh/full-scope
+    # token), not a permanently broken item. Treating them as unrecoverable
+    # here previously dropped an item -- for command_complete specifically,
+    # the only record that an already-completed operation succeeded, whose
+    # loss also lets the backend's still-"pending" command be redelivered
+    # and re-executed for real once the token is fixed, since nothing local
+    # remains to suppress it via has_pending_completion(). Every other 4xx
+    # (404: this command_id can never map to a completable row for this
+    # account; 422: this payload is permanently malformed) genuinely can
+    # never succeed no matter how many times it's retried, so those are
+    # still dropped exactly as before.
+    if response.status_code in (401, 403):
+        return False
+    return 400 <= response.status_code < 500
 
 
 def _log_if_auth_error(exc: requests.exceptions.RequestException) -> None:
@@ -200,7 +219,18 @@ def _flush_kind(client, conn: sqlite3.Connection, kind: str, sender) -> bool:
     return True
 
 
-def flush_outbox(client, conn: sqlite3.Connection) -> None:
+def flush_outbox(client, conn: sqlite3.Connection) -> bool:
+    """Returns False if a retryable (non-4xx) delivery failure stopped a
+    kind's queue mid-flush -- callers use this the same way commands.py's
+    retry_pending_files() already uses its own return value, to mark the
+    poll cycle unhealthy and back off. A connection/HTTP failure delivering
+    an activity or command_complete report is just as real a signal that
+    the backend is currently struggling as the equivalent failure in that
+    other function; the two are just as easily independent (different
+    routes) as they are related. A permanently-dropped 4xx item does NOT
+    count as a failure here -- _flush_kind() already returns True for that
+    case (dropping it was the correct, final outcome, not something that
+    needs a slower retry cadence)."""
     if not _flush_kind(client, conn, "activity", lambda p: client.report_activity(**p)):
-        return
-    _flush_kind(client, conn, "command_complete", lambda p: client.complete_command(**p))
+        return False
+    return _flush_kind(client, conn, "command_complete", lambda p: client.complete_command(**p))

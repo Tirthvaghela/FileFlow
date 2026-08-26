@@ -90,6 +90,30 @@ def test_download_and_apply_launches_on_checksum_match(monkeypatch, tmp_path):
     assert "/VERYSILENT" in args[0]
 
 
+def test_download_and_apply_launches_with_no_extra_arguments_env_or_shell(monkeypatch, tmp_path):
+    """Security-relevant: confirms the exact, complete Popen invocation --
+    installer path plus exactly the three known Inno Setup silent-install
+    flags, no shell=True, no env, nothing else. download_and_apply()'s
+    only interaction with `client` is the single client.download_installer()
+    call earlier in the function -- it never touches client.session,
+    headers, or any token -- so there is no code path here that could leak
+    a credential into a subprocess argument."""
+    launched = []
+    monkeypatch.setattr(updater.subprocess, "Popen", lambda *a, **k: launched.append((a, k)))
+    monkeypatch.setattr(updater.tempfile, "gettempdir", lambda: str(tmp_path))
+    data = b"totally real installer"
+    manifest = {"version": "9.9.9", "sha256": hashlib.sha256(data).hexdigest()}
+
+    updater.download_and_apply(_DownloadClient(data), manifest)
+
+    args, kwargs = launched[0]
+    argv = args[0]
+    assert argv[1:] == ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"], (
+        f"expected exactly the installer path plus the three known silent-install flags, got {argv}"
+    )
+    assert kwargs == {"close_fds": True}, "no shell=True, no env, nothing beyond the documented kwargs"
+
+
 def test_download_and_apply_does_not_launch_on_download_failure(monkeypatch):
     launched = []
     monkeypatch.setattr(
@@ -119,6 +143,34 @@ def test_check_for_update_rejects_a_manifest_missing_the_version_key():
             return {"sha256": "irrelevant"}
 
     assert updater.check_for_update(_NoVersionClient()) is None
+
+
+def test_check_for_update_rejects_a_non_string_version_value():
+    """Regression test for a real, confirmed bug: every OTHER malformed
+    manifest case (a malformed STRING version like "1.2.x", a missing
+    version key, a non-dict manifest) is already caught by
+    _parse_version()/dict-subscript raising ValueError/TypeError, which
+    check_for_update()'s except clause catches -- but a non-string
+    version VALUE (an int, None, a list -- JSON types the real backend's
+    Pydantic `version: str` schema can't currently produce, but a
+    realistic shape for agent/backend version skew or a different
+    backend, matching the same "valid JSON, wrong shape" class of concern
+    already established by the get_commands() shape audit) makes
+    v.split(".") raise AttributeError instead, which was not in the
+    caught tuple -- crashing check_for_update() itself instead of being
+    treated like every other malformed manifest."""
+
+    class _NonStringVersionClient:
+        def __init__(self, version):
+            self._version = version
+
+        def get_latest_version(self):
+            return {"version": self._version, "sha256": "irrelevant"}
+
+    for bad_version in (5, None, ["1", "2", "3"]):
+        assert updater.check_for_update(_NonStringVersionClient(bad_version)) is None, (
+            f"version={bad_version!r} must be treated as a malformed manifest, not raise"
+        )
 
 
 def test_check_for_update_rejects_a_non_dict_manifest():

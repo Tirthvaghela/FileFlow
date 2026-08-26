@@ -184,7 +184,14 @@ def _handle(client, watch_root: Path, command: dict, outbox_conn) -> None:
             success, error, result = _do_reclassify(client, watch_root, payload)
         elif command_type == "organize_existing":
             result = _do_organize_existing(client, watch_root, outbox_conn)
-            success, error = True, None
+            # Matches the same contract undo/reclassify already use below --
+            # success means the requested work actually happened, not just
+            # that this handler returned without raising. duplicates are
+            # never counted in errors (see _do_organize_existing: a
+            # duplicate_skipped file `continue`s before its try block's own
+            # except could ever increment errors), so a duplicate-only or
+            # empty batch still reports success=True.
+            success, error = result["errors"] == 0, None
         else:
             logger.warning("Unknown command type: %s", command_type)
             return
@@ -234,7 +241,8 @@ def poll_forever(
             # forever, even after the handler/observer had already
             # correctly swapped to the new one.
             current_watch_root = get_watch_root() if get_watch_root is not None else watch_root
-            outbox.flush_outbox(client, outbox_conn)
+            if not outbox.flush_outbox(client, outbox_conn):
+                healthy = False
             if not retry_pending_files(client, current_watch_root, outbox_conn):
                 healthy = False
             for command in client.get_commands():
@@ -273,11 +281,22 @@ def poll_forever(
         except requests.exceptions.RequestException:
             healthy = False
         except Exception:
+            # Not just a network/HTTP failure (that's the branch above) --
+            # this is anything else that kept the cycle from finishing,
+            # e.g. a get_commands() response with an unexpected shape
+            # (missing "id"/"type") raising KeyError/TypeError out of
+            # _handle(). Still means this cycle didn't complete, so it
+            # must back off the same way -- otherwise a persistently
+            # malformed response (which can never be marked "done", so
+            # the exact same one is returned every poll) would re-raise
+            # and re-log at full POLL_INTERVAL_SECONDS speed forever
+            # instead of backing off like every other failure mode.
             logger.exception("Command poll failed")
+            healthy = False
 
         if healthy:
             backoff = POLL_INTERVAL_SECONDS
         else:
-            logger.warning("Backend unreachable, retrying in %ss", backoff)
+            logger.warning("Poll cycle failed, retrying in %ss", backoff)
             backoff = min(backoff * 2, MAX_POLL_BACKOFF_SECONDS)
         time.sleep(backoff)

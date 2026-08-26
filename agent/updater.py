@@ -34,7 +34,15 @@ def check_for_update(client) -> dict | None:
     try:
         if _parse_version(manifest["version"]) > _parse_version(AGENT_VERSION):
             return manifest
-    except (KeyError, ValueError, TypeError):
+    except (KeyError, ValueError, TypeError, AttributeError):
+        # AttributeError specifically: manifest["version"] existing but
+        # not being a string (an int, None, a list -- JSON shapes the
+        # current backend's `version: str` schema can't produce, but a
+        # realistic one under agent/backend version skew) makes
+        # _parse_version()'s v.split(".") raise this instead of the
+        # ValueError/TypeError a malformed *string* version or a missing
+        # key already produce -- must be treated the same way as those,
+        # not left to crash this function.
         logger.warning("Malformed version manifest from backend: %s", manifest)
     return None
 
