@@ -8,6 +8,7 @@ from config.settings import settings
 from database.db import get_db, insert_with_id
 from main import app
 from models.models import Document, new_activity_log
+from services.digest_service import DigestOutcome
 
 
 @pytest.fixture()
@@ -214,6 +215,58 @@ class TestRules:
         resp = client.put("/api/rules", json=payload)
 
         assert resp.status_code == 422
+
+    def test_put_rules_rejects_a_negative_large_file_threshold(self, client, test_rules):
+        # Unlike DateRule.older_than_days (Field(ge=0)), large_file_threshold_mb
+        # had no lower-bound constraint at all -- a negative value makes
+        # classify_file()'s "file_size_bytes > threshold_mb * 1024 * 1024"
+        # check true for every file regardless of size (any real file size
+        # is > a negative number), silently routing everything into the
+        # large-file folder. The real Settings UI's slider is bounded to
+        # [10, 2000] so this was never reachable there, but nothing stopped
+        # a direct API call from saving it.
+        payload = {**test_rules, "large_file_threshold_mb": -1}
+
+        resp = client.put("/api/rules", json=payload)
+
+        assert resp.status_code == 422
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            pytest.param(r"(a+)+$", id="nested-quantifier"),
+            pytest.param(r"(a|aa)+$", id="overlapping-alternation"),
+            pytest.param(r"^(a|a?)+$", id="nested-optional"),
+        ],
+    )
+    def test_put_rules_rejects_a_catastrophic_backtracking_pattern(self, client, test_rules, pattern):
+        # Confirmed live (standalone reproduction, not part of this suite):
+        # each of these compiles fine -- re.compile() alone already accepted
+        # them -- but re.search() against a filename with as few as 25
+        # repeated characters already took multiple seconds, growing
+        # exponentially from there. classify_file() calls re.search() on
+        # every regex_rules entry for every file organized, so a pattern
+        # like this reaching persistence is a real ReDoS risk against real
+        # filenames, well within Windows' normal filename length limits.
+        payload = {**test_rules, "regex_rules": [{"pattern": pattern, "folder": "Camera"}]}
+
+        resp = client.put("/api/rules", json=payload)
+
+        assert resp.status_code == 422
+        assert "backtracking" in resp.text.lower()
+
+    def test_put_rules_still_accepts_an_ordinary_alternation_pattern(self, client, test_rules):
+        # Non-regression: alternatives that don't overlap (no branch is a
+        # prefix of another) must not be caught by the backtracking-shape
+        # heuristic just because the group is quantified.
+        payload = {
+            **test_rules,
+            "regex_rules": [{"pattern": r"(Invoice|Receipt)+", "folder": "Finance"}],
+        }
+
+        resp = client.put("/api/rules", json=payload)
+
+        assert resp.status_code == 200
 
     def test_put_rules_never_touches_the_real_rules_json_file(self, client, test_rules):
         before = settings.RULES_CONFIG_PATH.read_text(encoding="utf-8")
@@ -537,11 +590,12 @@ class TestSendDigest:
         assert resp.status_code == 200
         body = resp.json()
         assert body["success"] is False
+        assert "not configured" in body["message"].lower()
 
     def test_reports_success_when_the_send_succeeds(self, client, monkeypatch):
         monkeypatch.setattr(settings, "SMTP_USERNAME", "someone@gmail.com")
         monkeypatch.setattr(settings, "SMTP_PASSWORD", "app-password")
-        monkeypatch.setattr("api.routes.send_weekly_digest", lambda db, user: True)
+        monkeypatch.setattr("api.routes.send_weekly_digest", lambda db, user: DigestOutcome.SENT)
 
         resp = client.post("/api/reports/send-digest")
 
@@ -552,13 +606,36 @@ class TestSendDigest:
     def test_reports_failure_when_the_send_fails(self, client, monkeypatch):
         monkeypatch.setattr(settings, "SMTP_USERNAME", "someone@gmail.com")
         monkeypatch.setattr(settings, "SMTP_PASSWORD", "app-password")
-        monkeypatch.setattr("api.routes.send_weekly_digest", lambda db, user: False)
+        monkeypatch.setattr("api.routes.send_weekly_digest", lambda db, user: DigestOutcome.FAILED)
 
         resp = client.post("/api/reports/send-digest")
 
         assert resp.status_code == 200
         body = resp.json()
         assert body["success"] is False
+        assert "check server logs" in body["message"].lower()
+
+    def test_distinguishes_no_activity_from_an_actual_failure(self, client, monkeypatch):
+        """Regression test for the observability gap this task fixes: both
+        "nothing to report" and "the send itself failed" used to collapse
+        into the exact same generic "Failed to send the digest -- check
+        server logs" message -- misleading for the (very common) case
+        where nothing was actually wrong, there was just no activity."""
+        monkeypatch.setattr(settings, "SMTP_USERNAME", "someone@gmail.com")
+        monkeypatch.setattr(settings, "SMTP_PASSWORD", "app-password")
+        monkeypatch.setattr(
+            "api.routes.send_weekly_digest", lambda db, user: DigestOutcome.SKIPPED_NO_ACTIVITY
+        )
+
+        resp = client.post("/api/reports/send-digest")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["success"] is False
+        assert "no activity" in body["message"].lower()
+        assert "check server logs" not in body["message"].lower(), (
+            "a zero-activity skip must not be worded like an actual failure"
+        )
 
 
 class TestReportExports:
