@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { AlertTriangle, CheckCircle2, Copy, Loader2, Plus, X, XCircle } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import Header from "../components/Header.jsx";
+import RecentScheduledActivity from "../components/RecentScheduledActivity.jsx";
 import ConfirmDialog from "../components/ui/ConfirmDialog.jsx";
 import Toggle from "../components/ui/Toggle.jsx";
 import { Button } from "../components/ui/button.jsx";
@@ -108,6 +109,7 @@ export default function Settings() {
   const [agentToken, setAgentToken] = useState(null);
   const [agentTokenScope, setAgentTokenScope] = useState(null);
   const [generatingToken, setGeneratingToken] = useState(false);
+  const [tokenError, setTokenError] = useState("");
   const [tokenCopied, setTokenCopied] = useState(false);
   const [selectedTokenScope, setSelectedTokenScope] = useState("full");
   const [browsingFolder, setBrowsingFolder] = useState(false);
@@ -255,10 +257,13 @@ export default function Settings() {
   async function handleGenerateAgentToken() {
     setGeneratingToken(true);
     setTokenCopied(false);
+    setTokenError("");
     try {
       const { token, scope } = await generateAgentToken(selectedTokenScope);
       setAgentToken(token);
       setAgentTokenScope(scope);
+    } catch (err) {
+      setTokenError(err?.response?.data?.detail || "Couldn't generate a token -- try again.");
     } finally {
       setGeneratingToken(false);
     }
@@ -450,6 +455,24 @@ export default function Settings() {
                 {additionalFolderError}
               </span>
             )}
+            {user?.agent_connected && (user?.additional_watch_folders || []).length > 0 && (
+              <div
+                className="mt-2 rounded-md border px-3 py-2"
+                style={{
+                  borderColor: "var(--status-warning)",
+                  background: "color-mix(in srgb, var(--status-warning) 10%, transparent)",
+                }}
+              >
+                <p className="text-xs font-medium" style={{ color: "var(--status-warning)" }}>
+                  Remote agent watches only one folder
+                </p>
+                <p className="mt-0.5 text-xs text-[var(--text-secondary)]">
+                  Your connected agent monitors and organizes only the one folder it's set up
+                  with. Real-time monitoring and "Organize existing files" don't reach your
+                  other watch folders while the agent stays connected.
+                </p>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center justify-between border-t border-[var(--border)] py-3">
@@ -497,6 +520,14 @@ export default function Settings() {
                 onChange={(e) => save({ scheduled_organize_time: e.target.value })}
                 className="rounded-md border border-[var(--border)] bg-[var(--page)] px-3 py-1.5 text-sm text-[var(--text-primary)]"
               />
+            </div>
+          )}
+          {rules.scheduled_organize_enabled && (
+            <div className="border-t border-[var(--border)] pt-3">
+              <div className="mb-2 text-sm text-[var(--text-primary)]">
+                Recent scheduled activity
+              </div>
+              <RecentScheduledActivity />
             </div>
           )}
         </section>
@@ -683,6 +714,11 @@ export default function Settings() {
           >
             {generatingToken ? "Generating…" : "Generate agent token"}
           </button>
+          {tokenError && (
+            <span className="mt-2 block text-xs" style={{ color: "var(--status-critical)" }}>
+              {tokenError}
+            </span>
+          )}
 
           {agentToken && (
             <div className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--page)] p-3">

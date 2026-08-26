@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 
 from main import app
@@ -118,6 +120,47 @@ class TestMe:
 
         assert resp.status_code == 200
         assert resp.json()["email"] == "me@example.com"
+
+    def test_agent_connected_is_false_with_no_agent_heartbeat(self, anon_client):
+        anon_client.post(
+            "/api/auth/register", json={"email": "noagent@example.com", "password": "supersecret1"}
+        )
+
+        resp = anon_client.get("/api/auth/me")
+
+        assert resp.json()["agent_connected"] is False
+
+    def test_agent_connected_is_true_with_a_recent_agent_heartbeat(self, anon_client, db_session):
+        """agent_connected is computed by the same is_agent_connected()
+        heartbeat/threshold check already used everywhere else (routing
+        undo/reclassify/organize-existing to the agent, the local
+        watcher's own defer check) -- not a new signal, just exposed to
+        the frontend for the first time."""
+        anon_client.post(
+            "/api/auth/register", json={"email": "withagent@example.com", "password": "supersecret1"}
+        )
+        user_id = anon_client.get("/api/auth/me").json()["id"]
+        db_session.users.update_one(
+            {"_id": user_id}, {"$set": {"agent_last_seen_at": datetime.now(timezone.utc)}}
+        )
+
+        resp = anon_client.get("/api/auth/me")
+
+        assert resp.json()["agent_connected"] is True
+
+    def test_agent_connected_is_false_once_the_heartbeat_goes_stale(self, anon_client, db_session):
+        anon_client.post(
+            "/api/auth/register", json={"email": "staleagent@example.com", "password": "supersecret1"}
+        )
+        user_id = anon_client.get("/api/auth/me").json()["id"]
+        db_session.users.update_one(
+            {"_id": user_id},
+            {"$set": {"agent_last_seen_at": datetime.now(timezone.utc) - timedelta(minutes=10)}},
+        )
+
+        resp = anon_client.get("/api/auth/me")
+
+        assert resp.json()["agent_connected"] is False
 
     def test_returns_401_with_no_session(self, anon_client):
         resp = anon_client.get("/api/auth/me")

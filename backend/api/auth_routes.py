@@ -31,6 +31,7 @@ from models.schemas import (
     UserOut,
 )
 from monitor.watcher import add_user_watch, remove_user_watch
+from services.agent_service import is_agent_connected
 from services.password_reset_service import send_password_reset_email
 
 router = APIRouter(prefix="/api/auth")
@@ -164,6 +165,12 @@ def logout(response: Response):
 
 @router.get("/me", response_model=UserOut)
 def me(current_user: Document = Depends(get_current_user)):
+    # Computed from the same agent_last_seen_at heartbeat/threshold
+    # is_agent_connected() already uses everywhere else (routing undo/
+    # reclassify/organize-existing to the agent, the local watcher's own
+    # defer check) -- not a new signal, just exposing the existing one to
+    # the frontend for the first time.
+    current_user.agent_connected = is_agent_connected(current_user)
     return current_user
 
 

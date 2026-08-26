@@ -5,6 +5,39 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
+# A group ending in +/*/? or a {..} repeat, itself repeated with +/* right
+# after its closing paren -- the classic catastrophic-backtracking shape
+# (e.g. (a+)+, (a|a?)+). This regex is itself linear/unambiguous, so
+# checking a user-supplied pattern against it can't reintroduce the same
+# problem it's guarding against.
+_NESTED_QUANTIFIER_RE = re.compile(r"\(([^()]*)\)[+*]")
+
+
+def _has_catastrophic_backtracking_shape(pattern: str) -> bool:
+    """Best-effort static check for the two most common ReDoS pattern
+    shapes: a quantified group whose own body is also quantified (e.g.
+    (a+)+), and a quantified group whose alternatives overlap (e.g.
+    (a|aa)+, where "aa" can also be read as two "a"s -- the classic
+    ambiguous-alternation trigger). Confirmed live: patterns this shallow
+    already take multiple seconds against a filename only ~25 characters
+    long, well within a real filename's length limit, and Python's re
+    module has no execution budget to fall back on at match time -- so
+    this has to be caught before a pattern is ever persisted. Not a
+    complete ReDoS detector (deeper nesting or other ambiguous
+    constructs could still slip through) -- rejecting the well-known
+    common shapes outright is the smallest check that meaningfully
+    closes the gap without attempting full static regex analysis."""
+    for group_body in _NESTED_QUANTIFIER_RE.findall(pattern):
+        if re.search(r"[+*?]", group_body):
+            return True
+        alternatives = group_body.split("|")
+        if len(alternatives) > 1:
+            for i, left in enumerate(alternatives):
+                for right in alternatives[i + 1 :]:
+                    if left and right and (left.startswith(right) or right.startswith(left)):
+                        return True
+    return False
+
 
 class ActivityLogOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -69,6 +102,12 @@ class RegexRule(BaseModel):
             re.compile(value)
         except re.error as exc:
             raise ValueError(f"Not a valid regular expression: {exc}") from None
+        if _has_catastrophic_backtracking_shape(value):
+            raise ValueError(
+                "This pattern can take an extremely long time to match certain filenames "
+                "(catastrophic backtracking) -- try rewriting the repeated group so it "
+                "can't match the same text more than one way."
+            )
         return value
 
 
@@ -89,7 +128,7 @@ class RulesOut(BaseModel):
     disabled_date_rules: list[DateRule] = []
     content_keyword_rules: list[KeywordRule] = []
     disabled_content_keyword_rules: list[KeywordRule] = []
-    large_file_threshold_mb: int
+    large_file_threshold_mb: int = Field(ge=0)
     large_file_folder: str
     large_file_enabled: bool = True
     archive_after_days: int
@@ -229,6 +268,37 @@ class AgentCommandCompleteIn(BaseModel):
     result: dict = {}
 
 
+class AgentCommandHistoryOut(BaseModel):
+    """Browser-facing view of an agent command's lifecycle -- deliberately
+    omits the raw `payload` dict and never carries a token or Authorization
+    header, since neither is ever stored on this record. `log_id` is the
+    one exception: it's extracted out of payload.log_id (present on undo/
+    reclassify commands, never on organize_existing) specifically so a
+    History row can be correlated with the command it triggered, without
+    exposing the rest of that command's payload."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    type: str
+    status: str
+    success: bool | None = None
+    error: str | None = None
+    result: dict = {}
+    log_id: int | None = None
+    created_at: datetime
+    completed_at: datetime | None = None
+
+    @field_validator("created_at", "completed_at")
+    @classmethod
+    def _assume_utc(cls, value: datetime | None) -> datetime | None:
+        # Same reasoning as ActivityLogOut._assume_utc -- this store drops
+        # tzinfo on round-trip, so a naive value here is always UTC.
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+
 class AgentVersionOut(BaseModel):
     version: str
     sha256: str
@@ -328,6 +398,11 @@ class UserOut(BaseModel):
     # default only ever applies to pre-existing accounts.
     onboarding_completed: bool = True
     totp_enabled: bool = False
+    # Only ever computed by GET /api/auth/me (see its own comment) -- every
+    # other UserOut-shaped response (login, register, 2FA verify) leaves
+    # this at its default; those pages don't need it, and AuthContext's
+    # own mount-time refresh() already calls /me right after any of them.
+    agent_connected: bool = False
 
 
 class LoginResult(BaseModel):

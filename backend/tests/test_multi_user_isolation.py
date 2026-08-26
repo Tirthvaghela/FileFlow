@@ -5,6 +5,7 @@ auto-assigned watch folders (a user_<id> subfolder under the shared test
 root) rather than being pointed at one shared folder -- the isolation
 itself is what's under test here."""
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,20 @@ def test_each_account_gets_its_own_distinct_watch_folder(two_clients):
     assert alice.watch_folder != bob.watch_folder
     assert alice.watch_folder.exists()
     assert bob.watch_folder.exists()
+
+
+def test_agent_connected_status_never_leaks_across_accounts(two_clients, db_session):
+    """GET /api/auth/me's agent_connected field is computed from the
+    CALLING account's own agent_last_seen_at only -- Bob having a
+    connected agent must never make Alice's own /me response claim she
+    has one too."""
+    alice, bob = two_clients
+    db_session.users.update_one(
+        {"_id": bob.user_id}, {"$set": {"agent_last_seen_at": datetime.now(timezone.utc)}}
+    )
+
+    assert bob.get("/api/auth/me").json()["agent_connected"] is True
+    assert alice.get("/api/auth/me").json()["agent_connected"] is False
 
 
 def test_a_fresh_account_has_an_empty_dashboard_even_after_the_other_has_activity(two_clients):
@@ -238,3 +253,32 @@ def test_adding_an_additional_folder_for_one_account_does_not_affect_the_other(
     alice.post("/api/settings/watch-folders", json={"path": str(extra)})
 
     assert bob.get("/api/auth/me").json()["additional_watch_folders"] == []
+
+
+def test_rule_preview_never_matches_another_accounts_history(two_clients):
+    alice, bob = two_clients
+
+    (alice.watch_folder / "alice_invoice.txt").write_text("hi")
+    alice.post("/api/organize-existing")
+
+    # Bob has no matching history of his own -- if preview were scoped by
+    # anything other than the calling account's own user_id, Alice's
+    # invoice would leak into Bob's search here.
+    resp = bob.post("/api/rules/preview", json={"type": "keyword", "match": "invoice"})
+
+    assert resp.json()["matched_count"] == 0
+
+
+def test_rule_simulation_never_reclassifies_another_accounts_history(two_clients):
+    alice, bob = two_clients
+
+    (alice.watch_folder / "alice_report.pdf").write_text("hi")
+    alice.post("/api/organize-existing")
+
+    bob_rules = bob.get("/api/rules").json()
+    candidate = {**bob_rules, "default_category": "Everything"}
+    resp = bob.post("/api/rules/simulate", json=candidate)
+
+    # Bob's own history is empty -- simulating against his own candidate
+    # rules must compare zero of Alice's rows, not silently include them.
+    assert resp.json()["compared_count"] == 0
