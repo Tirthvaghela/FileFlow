@@ -52,7 +52,7 @@ export default function CategoryDetail() {
       targets.forEach((f, i) => {
         const r = results[i];
         if (r.status === "fulfilled" && r.value.success) deletedPaths.add(f.path);
-        else failures.push(f.name);
+        else failures.push({ name: f.name, message: r.status === "fulfilled" ? r.value.message : null });
       });
       if (deletedPaths.size) {
         setFiles((current) => current.filter((f) => !deletedPaths.has(f.path)));
@@ -62,12 +62,17 @@ export default function CategoryDetail() {
           return next;
         });
       }
-      if (failures.length) {
-        setError(
-          failures.length === targets.length
-            ? "Couldn't delete the selected file(s)."
-            : `Couldn't delete: ${failures.join(", ")}`
-        );
+      if (failures.length === 1) {
+        // The backend's own DeleteResult.message is specific and useful
+        // ("That file no longer exists.", a path-containment refusal, an
+        // agent-connected refusal, a real OS error) -- for the single-file
+        // case (by far the most common: the per-row delete button), show
+        // it directly instead of a generic string that discards it.
+        setError(failures[0].message || `Couldn't delete ${failures[0].name}.`);
+      } else if (failures.length === targets.length) {
+        setError("Couldn't delete the selected file(s).");
+      } else if (failures.length) {
+        setError(`Couldn't delete: ${failures.map((f) => f.name).join(", ")}`);
       }
     } catch {
       setError("Couldn't delete the selected file(s).");

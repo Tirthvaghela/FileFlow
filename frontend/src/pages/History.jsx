@@ -3,6 +3,7 @@ import ActivityTable from "../components/ActivityTable.jsx";
 import { CheckCircle2, RotateCcw, Undo2, X } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { useLiveLogs } from "../hooks/useLiveLogs.js";
+import { useCommandStatusByLogId } from "../hooks/useCommandStatusByLogId.js";
 import { reclassifyLog, undoLastOperation, undoLog } from "../services/api.js";
 import { collectKnownFolders } from "../utils/categoryMeta.js";
 import { useRules } from "../context/RulesContext.jsx";
@@ -15,34 +16,55 @@ const UNDOABLE_ACTIONS = ["moved", "renamed_and_moved", "replaced", "archived", 
 
 export default function History() {
   const { logs, refresh } = useLiveLogs(100);
+  const { commandStatusByLogId, refreshCommandStatus } = useCommandStatusByLogId();
   const { rules } = useRules();
   const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
   const [undoingId, setUndoingId] = useState(null);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
 
   async function handleUndoLast() {
-    const result = await undoLastOperation();
-    setMessage(result.message);
-    refresh();
+    setError("");
+    try {
+      const result = await undoLastOperation();
+      setMessage(result.message);
+      refresh();
+      refreshCommandStatus();
+    } catch {
+      setMessage("");
+      setError("Couldn't undo the last operation -- try again.");
+    }
   }
 
   async function handleUndoRow(log) {
     if (undoingId) return;
     setUndoingId(log.id);
+    setError("");
     try {
       const result = await undoLog(log.id);
       setMessage(result.message);
       refresh();
+      refreshCommandStatus();
+    } catch {
+      setMessage("");
+      setError("Couldn't undo that operation -- try again.");
     } finally {
       setUndoingId(null);
     }
   }
 
   async function handleReclassify(log, category) {
-    const result = await reclassifyLog(log.id, category);
-    setMessage(result.message);
-    refresh();
+    setError("");
+    try {
+      const result = await reclassifyLog(log.id, category);
+      setMessage(result.message);
+      refresh();
+      refreshCommandStatus();
+    } catch {
+      setMessage("");
+      setError("Couldn't reclassify that file -- try again.");
+    }
   }
 
   function toggleSelect(logId) {
@@ -79,6 +101,7 @@ export default function History() {
       );
       clearSelection();
       refresh();
+      refreshCommandStatus();
     } finally {
       setBulkBusy(false);
     }
@@ -101,6 +124,7 @@ export default function History() {
       );
       clearSelection();
       refresh();
+      refreshCommandStatus();
     } finally {
       setBulkBusy(false);
     }
@@ -216,6 +240,18 @@ export default function History() {
           )}
 
           <AnimatePresence>
+            {error && (
+              <motion.p
+                key={error}
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                className="mb-3 rounded-lg bg-[var(--status-critical)]/10 px-3 py-2 text-xs font-medium text-[var(--status-critical)]"
+              >
+                {error}
+              </motion.p>
+            )}
             {message && (
               <motion.p
                 key={message}
@@ -232,6 +268,7 @@ export default function History() {
           <ActivityTable
             logs={logs}
             showStatusBadge
+            commandStatusByLogId={commandStatusByLogId}
             onUndo={handleUndoRow}
             undoingId={undoingId}
             allowAnyRowUndo
