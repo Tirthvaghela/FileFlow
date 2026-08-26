@@ -17,7 +17,7 @@ from automation.file_ops import (
     resolve_destination,
     wait_for_stable_file,
 )
-from config.settings import all_watch_folders
+from config.settings import all_watch_folders, watch_folder_containing
 from database.db import insert_with_id
 from models.models import Document, new_activity_log
 from rules.classifier import is_within_watch_folder
@@ -364,7 +364,11 @@ def reclassify_file(
     if not source.exists():
         return False, f"File no longer exists at {source}.", None
 
-    watch_root = Path(user["watch_folder"])
+    # Not unconditionally Path(user["watch_folder"]) -- a file organized
+    # into an *additional* folder's own category subfolder (see
+    # organize_existing_files' own per-folder substitution) must be
+    # reclassified within THAT folder, not relocated into the primary one.
+    watch_root = watch_folder_containing(user, source)
     category = new_category.strip()
     if not category or not is_within_watch_folder(category, watch_root):
         return False, "Invalid destination category.", None
@@ -527,14 +531,24 @@ def delete_category_file(db, user: dict, category: str, file_path: str) -> tuple
         # and deleting an arbitrary file anywhere else on disk.
         return False, "That file isn't inside one of your watched category folders."
 
-    if not target.is_file():
-        return False, "That file no longer exists."
+    # Same _move_lock as process_file/undo/reclassify: is_file() then
+    # send2trash() is otherwise check-then-act, and unlike a plain
+    # filesystem move, send2trash() does not reliably raise when a second
+    # concurrent call targets a path the first call already removed --
+    # verified directly with a real threaded concurrency test, both calls
+    # reported success and each inserted its own "deleted" activity_log
+    # row for what was physically one deletion. The lock makes the check
+    # and the delete atomic as a pair, so the loser's is_file() check
+    # correctly sees the file is already gone.
+    with _move_lock:
+        if not target.is_file():
+            return False, "That file no longer exists."
 
-    try:
-        size_bytes = target.stat().st_size
-        send2trash(str(target))
-    except OSError as exc:
-        return False, f"Couldn't delete {target.name}: {exc}"
+        try:
+            size_bytes = target.stat().st_size
+            send2trash(str(target))
+        except OSError as exc:
+            return False, f"Couldn't delete {target.name}: {exc}"
 
     insert_with_id(
         db,
