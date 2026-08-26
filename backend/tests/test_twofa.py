@@ -133,6 +133,41 @@ class TestLoginWithTwoFactor:
         )
         assert resp.status_code == 401
 
+    def test_a_pending_token_cannot_be_used_as_a_session_cookie(self, anon_client):
+        """Regression test for a critical, confirmed 2FA bypass:
+        decode_token() (the function backing every authenticated route via
+        get_current_user) only ever rejected typ == "agent" -- a denylist
+        of exactly one other known token type. A 2fa_pending token (typ ==
+        "2fa_pending") is neither unset nor "agent", so it passed straight
+        through and decode_token() happily returned the real user_id from
+        it. Confirmed directly: pasting the pending_token /login returns
+        (proof of a correct PASSWORD only, explicitly NOT a real session --
+        see create_2fa_pending_token's own docstring) into the
+        fileflow_session cookie granted full, immediate access to every
+        authenticated route for a 2FA-enabled account, with no TOTP code
+        or backup code ever checked -- a complete 2FA bypass reachable by
+        anyone who knows the account's password alone."""
+        _register_and_login(anon_client, email="pendingbypass@example.com")
+        _enable_2fa(anon_client)
+
+        attacker = self._fresh_client()
+        login_resp = attacker.post(
+            "/api/auth/login",
+            json={"email": "pendingbypass@example.com", "password": "supersecret1"},
+        )
+        pending_token = login_resp.json()["pending_token"]
+        assert "fileflow_session" not in attacker.cookies, "login alone must not grant a session"
+
+        # The actual attack: use the pending_token directly as the session
+        # cookie instead of ever calling /2fa/verify.
+        attacker.cookies.set("fileflow_session", pending_token)
+        resp = attacker.get("/api/auth/me")
+
+        assert resp.status_code == 401, (
+            "a 2fa_pending token must never be accepted as a real session -- doing so "
+            "bypasses TOTP/backup-code verification entirely"
+        )
+
     def test_verify_with_a_valid_backup_code_grants_a_session_and_consumes_it(self, anon_client):
         _register_and_login(anon_client, email="backupok@example.com")
         _, backup_codes = _enable_2fa(anon_client)

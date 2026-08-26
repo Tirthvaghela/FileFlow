@@ -52,14 +52,22 @@ def create_token(user_id: int) -> str:
 
 def decode_token(token: str) -> int | None:
     """Returns the user id encoded in a valid, unexpired *session* token, or
-    None. Deliberately rejects agent tokens (see create_agent_token) even
-    though both are signed with the same secret -- without this check, a
-    leaked agent token (meant to run unattended on someone's own machine)
-    could be pasted into a browser as a session cookie and grant full
-    interactive access instead of just the narrow agent API surface."""
+    None. A real session token (see create_token) never carries a "typ"
+    claim at all -- requiring it to be absent, rather than denylisting
+    only "agent", is what actually rejects every other token type signed
+    with this same secret (an agent token, a 2fa_pending token, and any
+    future purpose-limited token this app adds later) instead of only the
+    one kind someone remembered to name here explicitly. Confirmed,
+    critical gap this closes: a 2fa_pending token (proof of a correct
+    password only, explicitly not a real session -- see
+    create_2fa_pending_token) previously satisfied `!= "agent"` and was
+    accepted here just like a real session, letting anyone who knew a
+    2FA-enabled account's password skip TOTP/backup-code verification
+    entirely by pasting the pending_token straight into the session
+    cookie."""
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-        if payload.get("typ") == "agent":
+        if payload.get("typ") is not None:
             return None
         return int(payload["sub"])
     except (jwt.PyJWTError, KeyError, ValueError, TypeError):

@@ -14,6 +14,8 @@ from api.auth import (
     set_session_cookie,
     verify_password,
 )
+from api.rate_limit import RateLimiter, rate_limited
+from config.settings import settings
 from database.db import get_db
 from models.models import Document
 from models.schemas import (
@@ -30,6 +32,15 @@ router = APIRouter(prefix="/api/auth/2fa")
 
 BACKUP_CODE_COUNT = 8
 ISSUER = "FileFlow"
+
+# Same reasoning as auth_routes.py's login_limiter: a pending_token proves
+# only that the password was correct, not who's holding it, and nothing
+# else bounds how many TOTP/backup-code guesses can be made against it
+# within its 5-minute lifetime.
+verify_limiter = RateLimiter(
+    max_requests=settings.TWOFA_VERIFY_RATE_LIMIT_MAX,
+    window_seconds=settings.TWOFA_VERIFY_RATE_LIMIT_WINDOW_SECONDS,
+)
 
 
 def _hash_backup_code(code: str) -> str:
@@ -113,7 +124,7 @@ def disable_2fa(
     return {"success": True}
 
 
-@router.post("/verify", response_model=UserOut)
+@router.post("/verify", response_model=UserOut, dependencies=[Depends(rate_limited(verify_limiter))])
 def verify_2fa(body: TwoFactorVerifyRequest, response: Response, db=Depends(get_db)):
     """The second step of login for a 2FA-enabled account -- exchanges the
     short-lived pending_token /login issued (proof the password was

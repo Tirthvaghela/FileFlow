@@ -1,5 +1,6 @@
 import time
 
+import pyotp
 import pytest
 from fastapi import HTTPException
 
@@ -102,6 +103,49 @@ class TestAuthEndpointsAreRateLimited:
         resp = anon_client.post(
             "/api/auth/register",
             json={"email": "ratelimit-register-overflow@example.com", "password": "supersecret1"},
+        )
+
+        assert resp.status_code == 429
+        assert "Retry-After" in resp.headers
+
+    def test_2fa_verify_returns_429_after_too_many_attempts(self, anon_client, monkeypatch):
+        """Regression test for a real, confirmed gap: unlike /login,
+        /register, and /forgot-password (all rate-limited above),
+        POST /api/auth/2fa/verify had no rate limiting at all -- a
+        pending_token (proof of a correct password only) has a 5-minute
+        lifetime, and nothing bounded how many TOTP/backup-code guesses
+        could be made against it within that window. The login limiter
+        only throttles minting a *new* pending token, not verify attempts
+        against one already obtained."""
+        from api import twofa_routes
+
+        monkeypatch.setattr(twofa_routes.verify_limiter, "max_requests", 3)
+
+        anon_client.post(
+            "/api/auth/register",
+            json={"email": "ratelimit-2fa@example.com", "password": "supersecret1"},
+        )
+        setup = anon_client.post("/api/auth/2fa/setup").json()
+        secret = setup["secret"]
+        anon_client.post("/api/auth/2fa/enable", json={"code": pyotp.TOTP(secret).now()})
+
+        from fastapi.testclient import TestClient
+        from main import app
+
+        login_resp = TestClient(app).post(
+            "/api/auth/login",
+            json={"email": "ratelimit-2fa@example.com", "password": "supersecret1"},
+        )
+        pending_token = login_resp.json()["pending_token"]
+
+        for _ in range(3):
+            resp = anon_client.post(
+                "/api/auth/2fa/verify", json={"pending_token": pending_token, "code": "000000"}
+            )
+            assert resp.status_code == 401
+
+        resp = anon_client.post(
+            "/api/auth/2fa/verify", json={"pending_token": pending_token, "code": "000000"}
         )
 
         assert resp.status_code == 429

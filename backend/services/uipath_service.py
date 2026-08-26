@@ -68,6 +68,25 @@ def execute_move_via_uipath(source: Path, dest_folder: Path, final_name: str) ->
         logger.warning("Could not parse UiPath Robot output for %s: %s", source.name, exc)
         return None
 
+    # The real, unmodified MoveFile.xaml always computes out_DestinationPath
+    # as exactly Combine(in_DestFolderPath, in_FinalFileName), so this never
+    # fires in normal operation -- but nothing previously verified it, and
+    # the caller (organizer.py::process_file) discards this function's
+    # return value once it's non-None, unconditionally logging its OWN
+    # pre-computed destination as though it were confirmed. A reported path
+    # that merely happens to exist somewhere else entirely (a differently
+    # built package, a tampered workflow, a corrupted response) was
+    # previously trusted completely instead of being caught here and
+    # falling back to Python's own, independently-verified move.
+    expected_dest_path = dest_folder / final_name
+    if dest_path.resolve() != expected_dest_path.resolve():
+        logger.warning(
+            "UiPath Robot reported an unexpected destination for %s (expected %s, got %s) "
+            "-- falling back.",
+            source.name, expected_dest_path, dest_path,
+        )
+        return None
+
     if not dest_path.exists():
         logger.warning(
             "UiPath Robot reported success but %s does not exist -- falling back.",

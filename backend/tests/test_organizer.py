@@ -258,6 +258,44 @@ class TestProcessFileUiPathWiring:
         assert (watch_folder / "Documents" / "notes.txt").exists()
         assert not source.exists()
 
+    def test_a_file_in_an_additional_watch_folder_is_routed_to_uipath_with_that_folders_own_path(
+        self, tmp_path, watch_folder, test_rules, db_session, test_user, monkeypatch
+    ):
+        """execute_move_via_uipath() has no folder-selection logic of its
+        own -- it just receives whatever dest_folder the caller already
+        resolved (confirmed by reading uipath_service.py: it takes plain
+        Path arguments, never a user dict or all_watch_folders() call).
+        Multi-folder correctness for the UiPath path is therefore entirely
+        inherited from organize_existing_files()'s own per-folder
+        substitution (already audited and fixed for reclassify_file() in
+        an earlier task) -- this confirms that inheritance actually holds:
+        a file in an *additional* folder must reach UiPath with THAT
+        folder's own dest_folder, never the primary watch_folder."""
+        additional = tmp_path / "additional_watch"
+        additional.mkdir()
+        user = {**test_user, "additional_watch_folders": [str(additional)]}
+        _write(additional / "notes.txt", "hi")
+
+        captured = {}
+
+        def fake_uipath(source, dest_folder, final_name):
+            captured["dest_folder"] = dest_folder
+            dest_folder.mkdir(parents=True, exist_ok=True)
+            source.rename(dest_folder / final_name)
+            return dest_folder / final_name
+
+        monkeypatch.setattr(organizer, "execute_move_via_uipath", fake_uipath)
+
+        result = organize_existing_files(db_session, user)
+
+        assert result["organized"] == 1
+        assert captured["dest_folder"] == additional / "Documents", (
+            "UiPath must be asked to move the file within its OWN watch folder, "
+            "not the account's primary one"
+        )
+        assert (additional / "Documents" / "notes.txt").exists()
+        assert not (watch_folder / "Documents" / "notes.txt").exists()
+
 
 class TestBuildFinalName:
     def test_unchanged_when_timestamp_rename_disabled(self, test_rules, test_engine):
@@ -526,3 +564,41 @@ class TestReclassifyFile:
         assert undone_log.action == "reclassified"
         assert (watch_folder / "Documents" / "notes.txt").exists()
         assert not (watch_folder / "Design" / "notes.txt").exists()
+
+    def test_reclassify_keeps_a_file_in_its_own_additional_watch_folder(
+        self, tmp_path, watch_folder, test_rules, db_session, test_user
+    ):
+        """Regression test for a real, confirmed bug: reclassify_file()
+        always computed its destination relative to Path(user["watch_
+        folder"]) -- the account's PRIMARY folder only -- never checking
+        which watch folder the file actually lives in. organize_existing_
+        files() already gets this right (it substitutes the correct
+        watch_root per file, see its own docstring/comment), so a file
+        organized into an *additional* folder's own category subfolder
+        genuinely exists on disk -- reclassifying it silently relocated it
+        into the PRIMARY folder's category subfolder instead of staying
+        within the additional folder it actually came from (a same-drive
+        rename doesn't even raise; it just silently moves the file into
+        the wrong top-level watch folder)."""
+        additional = tmp_path / "additional_watch"
+        additional.mkdir()
+        user = {**test_user, "additional_watch_folders": [str(additional)]}
+
+        source = _write(additional / "notes.txt", "hi")
+        original_log = organize_existing_files(db_session, user)
+        assert original_log["organized"] == 1
+        assert (additional / "Documents" / "notes.txt").exists()
+
+        log_row = db_session.activity_log.find_one({"user_id": user["id"], "action": "moved"})
+
+        success, message, new_log = reclassify_file(log_row["id"], "Design", db_session, user)
+
+        assert success is True, message
+        assert (additional / "Design" / "notes.txt").exists(), (
+            "a file organized into an additional watch folder must be reclassified "
+            "within that SAME folder, not relocated into the primary watch folder"
+        )
+        assert not (watch_folder / "Design" / "notes.txt").exists(), (
+            "reclassify must never move a file into a different top-level watch "
+            "folder than the one it actually came from"
+        )

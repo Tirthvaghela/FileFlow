@@ -105,6 +105,16 @@ class Settings:
     PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS: float = float(
         os.getenv("PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS", "3600")
     )
+    # Same reasoning as LOGIN_RATE_LIMIT_* above, for the second half of a
+    # 2FA-enabled login: a valid pending_token (5-minute lifetime) proves
+    # only that the password was correct, not who's holding it, so nothing
+    # else bounds how many TOTP/backup-code guesses can be made against it
+    # -- the login limiter only throttles minting a *new* pending token,
+    # not verify attempts against one already obtained.
+    TWOFA_VERIFY_RATE_LIMIT_MAX: int = int(os.getenv("TWOFA_VERIFY_RATE_LIMIT_MAX", "5"))
+    TWOFA_VERIFY_RATE_LIMIT_WINDOW_SECONDS: float = float(
+        os.getenv("TWOFA_VERIFY_RATE_LIMIT_WINDOW_SECONDS", "300")
+    )
 
     # Base URL of the deployed frontend -- used to build the link inside the
     # password reset email. Defaults to the local Vite dev server.
@@ -158,3 +168,27 @@ def all_watch_folders(user: dict) -> list[Path]:
     folders = [Path(user["watch_folder"])]
     folders.extend(Path(f) for f in user.get("additional_watch_folders", None) or [])
     return folders
+
+
+def watch_folder_containing(user: dict, path: Path) -> Path:
+    """Which of this account's watch folders `path` currently lives
+    inside -- computing a destination for an already-organized file (e.g.
+    reclassify) must resolve it relative to the SAME watch folder the file
+    actually came from, not unconditionally the primary one, or it would
+    relocate the file into a completely different top-level tree (a
+    same-drive rename wouldn't even raise -- it would just silently move
+    the file into the wrong folder; a different-drive additional folder
+    would raise OSError instead). Falls back to the primary watch_folder
+    if `path` isn't inside any of this account's known folders."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return Path(user["watch_folder"])
+    for root in all_watch_folders(user):
+        try:
+            root_resolved = root.resolve()
+        except OSError:
+            continue
+        if resolved == root_resolved or root_resolved in resolved.parents:
+            return root
+    return Path(user["watch_folder"])

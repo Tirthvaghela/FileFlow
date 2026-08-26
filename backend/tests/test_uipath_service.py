@@ -80,6 +80,40 @@ class TestExecuteMoveViaUiPath:
             "in_FinalFileName": "a.txt",
         }
 
+    def test_special_characters_in_the_path_reach_the_robot_unmangled(
+        self, uipath_configured, monkeypatch, tmp_path
+    ):
+        """subprocess.run() is called with an argument LIST here, never
+        shell=True (confirmed by reading the call) -- so there is no shell
+        metacharacter interpretation to worry about, only whether the raw
+        path survives unmangled into the JSON payload. A filename with
+        spaces, parentheses, an ampersand, and a semicolon exercises
+        exactly the characters a shell-based command construction would
+        have needed to escape."""
+        tricky_name = "Report (final) & notes; v2.txt"
+        dest_folder = tmp_path / "dest folder (2024)"
+        dest_folder.mkdir()
+        dest = dest_folder / tricky_name
+        dest.write_text("hi")
+        captured = {}
+
+        def fake_run(args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return _completed(stdout=json.dumps({"out_DestinationPath": str(dest)}))
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        source = tmp_path / tricky_name
+
+        result = execute_move_via_uipath(source, dest_folder, tricky_name)
+
+        assert result == dest
+        assert "shell" not in captured["kwargs"] or captured["kwargs"]["shell"] is False
+        input_json = json.loads(captured["args"][captured["args"].index("--input") + 1])
+        assert input_json["in_SourceFilePath"] == str(source)
+        assert input_json["in_DestFolderPath"] == str(dest_folder)
+        assert input_json["in_FinalFileName"] == tricky_name
+
     def test_returns_none_when_uirobot_exits_nonzero(self, uipath_configured, monkeypatch, tmp_path):
         monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _completed(returncode=1, stderr="boom"))
 
@@ -131,3 +165,64 @@ class TestExecuteMoveViaUiPath:
         result = execute_move_via_uipath(tmp_path / "a.txt", tmp_path / "dest", "a.txt")
 
         assert result is None
+
+    def test_returns_none_when_reported_destination_is_outside_the_requested_folder(
+        self, uipath_configured, monkeypatch, tmp_path
+    ):
+        """Regression test for a real, confirmed gap: execute_move_via_
+        uipath() only ever checked that *something* exists at whatever
+        out_DestinationPath the Robot's stdout reported -- never that this
+        matches the dest_folder/final_name it was actually asked to use.
+        The real, unmodified MoveFile.xaml always computes out_
+        DestinationPath as exactly Combine(in_DestFolderPath, in_
+        FinalFileName) (confirmed by reading the workflow source), so this
+        never fires in normal operation -- but nothing enforced it, and
+        process_file()'s own caller discards this function's return value
+        entirely once it's non-None, logging its OWN pre-computed
+        dest_path unconditionally. A Robot (or a differently-built
+        package pointed at by a misconfigured UIPATH_PACKAGE_PATH, or a
+        compromised workflow) reporting an unrelated-but-existing path
+        would previously be trusted completely, with no verification it
+        has anything to do with the requested folder at all."""
+        requested_dest_folder = tmp_path / "dest"
+        requested_dest_folder.mkdir()
+        # A real, pre-existing file that has nothing to do with this move --
+        # simulating a Robot response that reports success against some
+        # other path entirely.
+        unrelated_existing_file = tmp_path / "unrelated_preexisting_file.txt"
+        unrelated_existing_file.write_text("not the file this call was about")
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **kw: _completed(
+                stdout=json.dumps({"out_DestinationPath": str(unrelated_existing_file)})
+            ),
+        )
+
+        result = execute_move_via_uipath(tmp_path / "a.txt", requested_dest_folder, "a.txt")
+
+        assert result is None, (
+            "a reported destination outside the requested dest_folder/final_name must be "
+            "rejected, not trusted just because something happens to exist there"
+        )
+
+    def test_accepts_the_reported_destination_when_it_exactly_matches_the_request(
+        self, uipath_configured, monkeypatch, tmp_path
+    ):
+        """Non-regression companion to the test above -- confirms the fix
+        doesn't also reject the normal, correct case."""
+        dest_folder = tmp_path / "dest"
+        dest_folder.mkdir()
+        expected_dest = dest_folder / "a.txt"
+        expected_dest.write_text("moved by uipath")
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **kw: _completed(
+                stdout=json.dumps({"out_DestinationPath": str(expected_dest)})
+            ),
+        )
+
+        result = execute_move_via_uipath(tmp_path / "a.txt", dest_folder, "a.txt")
+
+        assert result == expected_dest
