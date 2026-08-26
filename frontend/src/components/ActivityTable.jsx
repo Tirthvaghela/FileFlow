@@ -43,6 +43,26 @@ function relativeTime(iso) {
   return formatTime(iso);
 }
 
+const STATUS_BADGE_META = {
+  pending: { label: "Waiting for agent…", color: "var(--status-warning)" },
+  failed: { label: "Failed", color: "var(--status-critical)" },
+  completed: { label: "Completed", color: "var(--status-good)" },
+};
+
+// commandStatusByLogId correlates this row's own log.id with the most
+// recent undo/reclassify agent command it triggered (see
+// useCommandStatusByLogId.js) -- when one exists, its real, current
+// status replaces the otherwise-unconditional "Completed" placeholder.
+// success===false (not falsy/undefined) specifically means the command
+// row is fully "done" with a real failure, distinct from "not started
+// yet" (pending, success still null) -- never reinterpreted beyond that.
+function agentCommandBadge(command) {
+  if (!command) return STATUS_BADGE_META.completed;
+  if (command.status === "pending") return STATUS_BADGE_META.pending;
+  if (command.success === false) return STATUS_BADGE_META.failed;
+  return STATUS_BADGE_META.completed;
+}
+
 function FileBadge({ log }) {
   const meta = ACTION_META[log.action] || { color: "var(--text-muted)" };
   const color = meta.color;
@@ -63,6 +83,7 @@ export default function ActivityTable({
   undoingId = null,
   allowAnyRowUndo = false,
   showStatusBadge = false,
+  commandStatusByLogId = {},
   onReclassify,
   categories = [],
   selectable = false,
@@ -82,6 +103,7 @@ export default function ActivityTable({
     <div className="divide-y divide-[var(--border)]">
       {logs.map((log, i) => {
         const meta = ACTION_META[log.action] || { label: log.action, color: "var(--text-muted)" };
+        const badge = agentCommandBadge(commandStatusByLogId[log.id]);
         return (
           <div key={log.id} className="flex items-center gap-3 py-3">
             {selectable && !log.undone && (
@@ -114,11 +136,11 @@ export default function ActivityTable({
               <span
                 className="rounded-full px-2.5 py-1 text-xs font-medium"
                 style={{
-                  color: "var(--status-good)",
-                  background: "color-mix(in srgb, var(--status-good) 14%, transparent)",
+                  color: badge.color,
+                  background: `color-mix(in srgb, ${badge.color} 14%, transparent)`,
                 }}
               >
-                Completed
+                {badge.label}
               </span>
             )}
             {onUndo &&

@@ -8,6 +8,7 @@ import CategoryDonut from "../components/CategoryDonut.jsx";
 import WeeklyChart from "../components/WeeklyChart.jsx";
 import ActivityTable from "../components/ActivityTable.jsx";
 import PipelineFlow from "../components/PipelineFlow.jsx";
+import RecentAgentActivity from "../components/RecentAgentActivity.jsx";
 import { useLiveLogs } from "../hooks/useLiveLogs.js";
 import TiltCard from "../components/ui/TiltCard.jsx";
 import ConfirmDialog from "../components/ui/ConfirmDialog.jsx";
@@ -258,6 +259,15 @@ export default function Dashboard() {
               {organizeResult.errors > 0 && `, ${organizeResult.errors} error(s)`}.
             </p>
           )}
+        </motion.div>
+
+        {/* Recent undo/reclassify agent activity */}
+        <motion.div
+          variants={itemVariants}
+          className="rounded-2xl border border-[var(--border)] bg-[var(--surface-1)]/80 backdrop-blur p-5 shadow-sm"
+        >
+          <h2 className="mb-3 text-sm font-medium text-[var(--text-primary)]">Recent activity</h2>
+          <RecentAgentActivity />
         </motion.div>
 
         {/* Weekly Activity & Categories charts */}

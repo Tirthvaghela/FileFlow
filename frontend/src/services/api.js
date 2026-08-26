@@ -58,6 +58,12 @@ export const getStats = () => api.get("/api/stats").then((r) => r.data);
 export const getCategories = () => api.get("/api/categories").then((r) => r.data);
 export const getLogs = (limit = 50) =>
   api.get(`/api/logs?limit=${limit}`).then((r) => r.data);
+export const getAgentCommands = ({ type, source, limit = 20 } = {}) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (type) params.set("type", type);
+  if (source) params.set("source", source);
+  return api.get(`/api/agent-commands?${params.toString()}`).then((r) => r.data);
+};
 export const getRules = () => api.get("/api/rules").then((r) => r.data);
 export const updateRules = (rules) =>
   api.put("/api/rules", rules).then((r) => r.data);
