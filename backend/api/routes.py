@@ -12,6 +12,7 @@ from automation.organizer import (
     delete_category_file,
     generate_simulated_download,
     list_category_files,
+    list_category_stats,
     organize_existing_files,
     reclassify_file,
     undo_last_operation,
@@ -54,7 +55,7 @@ from services.report_service import build_csv, build_excel, build_pdf
 from services.agent_service import enqueue_agent_command, is_agent_connected
 from services.rule_preview_service import preview_rule
 from services.rule_simulation_service import simulate_rules
-from services.stats_service import get_category_sizes, get_stats, get_weekly_reports
+from services.stats_service import get_stats, get_weekly_reports
 
 # Every route on this router requires a valid session -- /api/health and
 # /api/auth/* live on separate, unauthenticated routers (see main.py and
@@ -77,7 +78,12 @@ def stats(db=Depends(get_db), user=Depends(get_current_user)):
 
 @router.get("/categories", response_model=list[CategorySizeStat])
 def categories(db=Depends(get_db), user=Depends(get_current_user)):
-    return get_category_sizes(db, user["id"])
+    """A live count/size per category folder, sourced the same way as
+    GET /api/categories/{category}/files -- so a category tile here always
+    agrees with what its own detail page shows, including disappearing once
+    every file that was ever organized into it is gone."""
+    engine = get_rule_engine(db, user["id"], Path(user["watch_folder"]))
+    return list_category_stats(user, engine.archive_folder)
 
 
 @router.get("/categories/{category}/files", response_model=list[CategoryFileOut])

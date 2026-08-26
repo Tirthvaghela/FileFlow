@@ -53,7 +53,7 @@ class AgentRuntime:
         threading.Thread(
             target=poll_forever,
             args=(self.client, self.watch_root, self.outbox_conn, self.shutdown),
-            kwargs={"get_handler": lambda: self.handler},
+            kwargs={"get_handler": lambda: self.handler, "get_watch_root": lambda: self.watch_root},
             daemon=True,
         ).start()
         logger.info("FileFlow agent running -- watching %s", self.watch_root)
@@ -75,13 +75,24 @@ class AgentRuntime:
         """Applies a saved Reconfigure -- new token/backend URL take effect
         immediately on the existing client; a changed watch folder means
         stopping the old Observer and starting a fresh one, since watchdog
-        Observers watch one fixed path for their whole lifetime."""
+        Observers watch one fixed path for their whole lifetime.
+
+        The new Observer is started *before* the old one is torn down, and
+        self.observer/self.handler/self.watch_root are only reassigned once
+        that succeeds. Starting the replacement first briefly runs two
+        Observers at once (watching two different folders -- never a
+        conflict), but the alternative -- stop old, then start new -- left
+        the runtime with no working watcher at all, and self.watch_root
+        pointing at a folder nothing was actually watching, if the new
+        Observer ever failed to start (bad path, permissions, ...): no
+        rollback, stuck until the whole process was restarted."""
         self.client.reconfigure(config)
         if Path(config.watch_folder).resolve() != self.watch_root.resolve():
-            self.observer.stop()
-            self.observer.join(timeout=5)
-            self.watch_root = config.watch_root
-            self.observer, self.handler = start_watching(self.client, self.watch_root, self.outbox_conn)
+            new_observer, new_handler = start_watching(self.client, config.watch_root, self.outbox_conn)
+            old_observer = self.observer
+            self.observer, self.handler, self.watch_root = new_observer, new_handler, config.watch_root
+            old_observer.stop()
+            old_observer.join(timeout=5)
             logger.info("Reconfigured -- now watching %s", self.watch_root)
         else:
             logger.info("Reconfigured.")
@@ -127,7 +138,24 @@ def main() -> None:
         current = load_config()
         updated = run_setup_wizard(existing=current)
         if updated is not None:
-            runtime.apply_config(updated)
+            # run_setup_wizard() already called save_config() and closed its
+            # window before returning here -- to the user, that already
+            # looked like a completed, successful reconfigure. Without this
+            # notify(), a failure below (e.g. the new watch folder can't be
+            # created/watched) was invisible: only ever logged (see
+            # agent/tray.py's callback-exception handling), never shown to
+            # the user, who'd have no way to know the agent was still
+            # silently running on its old configuration.
+            try:
+                runtime.apply_config(updated)
+            except Exception:
+                notify(
+                    "FileFlow Agent",
+                    "Reconfigure failed -- still running with the previous settings. "
+                    "Check the watch folder and try again.",
+                    {},
+                )
+                raise
 
     run_tray(
         is_paused=runtime.is_paused,

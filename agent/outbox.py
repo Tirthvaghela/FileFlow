@@ -25,20 +25,38 @@ _MAX_BACKOFF_SECONDS = 300.0
 _lock = threading.Lock()
 
 
+_CREATE_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS outbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at REAL NOT NULL DEFAULT 0
+    )
+"""
+
+
 def open_queue(path: Path = DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(path, check_same_thread=False)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS outbox (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            kind TEXT NOT NULL,
-            payload TEXT NOT NULL,
-            attempts INTEGER NOT NULL DEFAULT 0,
-            next_attempt_at REAL NOT NULL DEFAULT 0
-        )
-        """
-    )
-    conn.commit()
+    try:
+        conn.execute(_CREATE_TABLE_SQL)
+        conn.commit()
+    except sqlite3.DatabaseError:
+        # A genuinely corrupt/non-SQLite file at this path (disk corruption,
+        # external interference -- SQLite's own journaling already protects
+        # against an ordinary process-kill-mid-write) previously crashed the
+        # whole agent right here, before main() got anywhere near showing a
+        # tray icon or notification. Unlike a corrupted config.json, nothing
+        # here actually needs the user's input to recover: the outbox only
+        # holds not-yet-delivered activity/command reports (the underlying
+        # file-organizing work already happened), so starting fresh is safe
+        # and lets the agent keep running instead of refusing to start.
+        conn.close()
+        logger.warning("Outbox database at %s is corrupted -- starting a fresh one", path)
+        path.unlink()
+        conn = sqlite3.connect(path, check_same_thread=False)
+        conn.execute(_CREATE_TABLE_SQL)
+        conn.commit()
     return conn
 
 
@@ -84,6 +102,22 @@ def due_items(conn: sqlite3.Connection, kind: str, now: float | None = None) -> 
         ).fetchall()
 
 
+def has_pending_completion(conn: sqlite3.Connection, command_id: int) -> bool:
+    """True if this command's outcome has already been computed and queued
+    for delivery (whether due for retry right now or still waiting out a
+    backoff delay) -- callers use this to avoid re-running a command's
+    handler a second time before its first outcome has even reached the
+    backend. Without it, a command redelivered by the backend (still
+    "pending" there because the first completion POST hasn't landed yet)
+    would be executed again for real, and a second, now-stale outcome
+    (e.g. "file already moved" for an undo that already succeeded) could
+    reach the backend after the first one and incorrectly undo its effect."""
+    for row in due_items(conn, "command_complete", now=float("inf")):
+        if json.loads(row["payload"]).get("command_id") == command_id:
+            return True
+    return False
+
+
 def delete_item(conn: sqlite3.Connection, item_id: int) -> None:
     with _lock:
         conn.execute("DELETE FROM outbox WHERE id = ?", (item_id,))
@@ -94,7 +128,21 @@ def bump_failure(conn: sqlite3.Connection, item_id: int) -> None:
     with _lock:
         row = conn.execute("SELECT attempts FROM outbox WHERE id = ?", (item_id,)).fetchone()
         attempts = (row[0] if row else 0) + 1
-        delay = min(_BASE_BACKOFF_SECONDS * (2 ** (attempts - 1)), _MAX_BACKOFF_SECONDS)
+        # The exponent itself is capped, not just the final delay: with an
+        # item stuck failing for ~3.5+ continuous days (reachable by pure
+        # time passing against a permanently unreachable backend, no
+        # tampering needed -- attempts is never reset, including across a
+        # process restart, since it's persisted here), 2 ** (attempts - 1)
+        # eventually reaches a Python int too large for float(x) to
+        # represent at all, and 5.0 * that int raises OverflowError
+        # directly -- confirmed at attempts=1025 -- before min() below ever
+        # gets a chance to cap it back down to _MAX_BACKOFF_SECONDS. Capping
+        # the exponent at 10 (2**10 * 5.0 = 5120, already well past
+        # _MAX_BACKOFF_SECONDS on its own) preserves the exact same delay
+        # for every attempts value that matters and makes the overflow
+        # unreachable, instead of only capping a result that was never
+        # successfully computed.
+        delay = min(_BASE_BACKOFF_SECONDS * (2 ** min(attempts - 1, 10)), _MAX_BACKOFF_SECONDS)
         conn.execute(
             "UPDATE outbox SET attempts = ?, next_attempt_at = ? WHERE id = ?",
             (attempts, time.time() + delay, item_id),

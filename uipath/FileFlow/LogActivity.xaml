@@ -4,6 +4,7 @@
     <x:Property Name="in_FinalFileName" Type="InArgument(x:String)" />
     <x:Property Name="in_DestFolder" Type="InArgument(x:String)" />
     <x:Property Name="in_DestinationPath" Type="InArgument(x:String)" />
+    <x:Property Name="in_ActivityLogPath" Type="InArgument(x:String)" />
   </x:Members>
   <TextExpression.NamespacesForImplementation>
     <sco:Collection x:TypeArguments="x:String">
@@ -106,7 +107,7 @@
         <OutArgument x:TypeArguments="x:String">[logPath]</OutArgument>
       </Assign.To>
       <Assign.Value>
-        <InArgument x:TypeArguments="x:String">["C:\Users\Tirth\OneDrive\Desktop\FileFlow\uipath\FileFlow\ActivityLog.csv"]</InArgument>
+        <InArgument x:TypeArguments="x:String">[in_ActivityLogPath]</InArgument>
       </Assign.Value>
     </Assign>
     <If Condition="[Not System.IO.File.Exists(logPath)]" DisplayName="If log file doesn't exist yet" sap:VirtualizedContainerService.HintSize="452,268" sap2010:WorkflowViewState.IdRef="If_501">

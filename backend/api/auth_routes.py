@@ -183,7 +183,13 @@ def delete_account(
 
     remove_user_watch(user["id"])
     db.users.delete_one({"_id": user["id"]})
-    db.rules.delete_one({"_id": user["id"]})
+    # str(), not the bare int id: RuleEngine always keys a rules document by
+    # str(user_id) (see rules/rule_engine.py's get_rule_engine), never the
+    # bare int -- filtering by the int here matched zero documents, so a
+    # deleted account's rules silently lived on in Mongo forever. Confirmed
+    # directly: the only other writer of this collection is RuleEngine
+    # itself, and it never uses an int _id.
+    db.rules.delete_one({"_id": str(user["id"])})
     db.activity_log.delete_many({"user_id": user["id"]})
     db.agent_commands.delete_many({"user_id": user["id"]})
     clear_session_cookie(response)

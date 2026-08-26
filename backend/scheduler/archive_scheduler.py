@@ -5,6 +5,7 @@ from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from automation.file_ops import move_lock as _move_lock
 from automation.organizer import organize_existing_files
 from config.settings import all_watch_folders, settings
 from database.db import db, insert_with_id
@@ -61,28 +62,38 @@ def _archive_old_files_in_folder(user: dict, watch_root: Path) -> int:
         except OSError:
             continue
 
-        dest = archive_root / path.name
-        counter = 1
-        while dest.exists():
-            dest = archive_root / f"{path.stem} ({counter}){path.suffix}"
-            counter += 1
+        # Same _move_lock automation/organizer.py's process_file/undo/
+        # reclassify already hold around their own "resolve a unique
+        # destination name, then rename into it" sequence -- this scheduled
+        # sweep was the one file-moving path left that didn't, so it could
+        # race one of those (or the storage-threshold auto-archive below)
+        # renaming a different file to this exact same destination path,
+        # the same non-atomic-on-Windows collision move_lock itself
+        # documents (two renames can both pass the exists() check for the
+        # same target before either has actually moved anything).
+        with _move_lock:
+            dest = archive_root / path.name
+            counter = 1
+            while dest.exists():
+                dest = archive_root / f"{path.stem} ({counter}){path.suffix}"
+                counter += 1
 
-        original_category = path.parent.name
-        try:
-            file_size = path.stat().st_size
-            # .rename(), not shutil.move(): shutil's own fallback silently
-            # absorbs a "destination already exists" collision by copying
-            # over it instead of raising (see the equivalent fix in
-            # automation/organizer.py) -- a real risk here since this scan
-            # can race a manual reclassify/undo touching the same file
-            # while the scheduled sweep is mid-run.
-            path.rename(dest)
-        except OSError:
-            logger.warning(
-                "Could not archive %s for user %d -- left in place, will retry next sweep.",
-                path, user["id"],
-            )
-            continue
+            original_category = path.parent.name
+            try:
+                file_size = path.stat().st_size
+                # .rename(), not shutil.move(): shutil's own fallback silently
+                # absorbs a "destination already exists" collision by copying
+                # over it instead of raising (see the equivalent fix in
+                # automation/organizer.py) -- a real risk here since this scan
+                # can race a manual reclassify/undo touching the same file
+                # while the scheduled sweep is mid-run.
+                path.rename(dest)
+            except OSError:
+                logger.warning(
+                    "Could not archive %s for user %d -- left in place, will retry next sweep.",
+                    path, user["id"],
+                )
+                continue
 
         insert_with_id(
             db,
@@ -153,9 +164,23 @@ def _run_scheduled_organize_for_user(user: dict, today: str) -> None:
         return
 
     if is_agent_connected(user):
+        # Only queues the command here -- the agent, not this process, does
+        # the actual scan/move, and reports its own outcome asynchronously
+        # via POST /api/agent/commands/{id}/complete once it next polls.
         enqueue_agent_command(db, user["id"], "organize_existing", {})
+        logger.info("Scheduled organize for user %d: dispatched to agent.", user["id"])
     else:
-        organize_existing_files(db, user)
+        # Unlike enqueue_agent_command above, this runs synchronously and
+        # its result was previously discarded here -- logging it (matching
+        # archive_old_files()'s own "log the counts" convention in this
+        # same file) is what actually distinguishes "ran and organized N
+        # files" from "ran and found nothing to do" in the log a scheduled
+        # job's "executed successfully" message alone cannot.
+        result = organize_existing_files(db, user)
+        logger.info(
+            "Scheduled organize for user %d: scanned %d, organized %d, %d duplicate(s), %d error(s).",
+            user["id"], result["scanned"], result["organized"], result["duplicates"], result["errors"],
+        )
     db.users.update_one({"_id": user["id"]}, {"$set": {"scheduled_organize_last_run": today}})
 
 
@@ -182,26 +207,31 @@ def run_storage_threshold_check() -> None:
 
 def start_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler()
+    # next_run_time is deliberately left at its default (unspecified) on
+    # every job below, NOT passed as None -- APScheduler's add_job() treats
+    # next_run_time=None as "add this job paused" (see its docstring), which
+    # silently disabled every one of these jobs forever, including the
+    # nightly organize sweep: they were registered but never actually fired,
+    # on any schedule. Leaving it unspecified lets IntervalTrigger compute
+    # the normal first fire time of "now + interval" -- still not immediate
+    # on every server restart, just no longer permanently off.
     scheduler.add_job(
         archive_old_files,
         "interval",
         hours=settings.ARCHIVE_CHECK_INTERVAL_HOURS,
         id="archive_old_files",
-        next_run_time=None,
     )
     scheduler.add_job(
         run_recycle_bin_purge,
         "interval",
         hours=settings.ARCHIVE_CHECK_INTERVAL_HOURS,
         id="recycle_bin_purge",
-        next_run_time=None,
     )
     scheduler.add_job(
         run_storage_threshold_check,
         "interval",
         hours=settings.ARCHIVE_CHECK_INTERVAL_HOURS,
         id="storage_threshold_check",
-        next_run_time=None,
     )
     if settings.WEEKLY_DIGEST_ENABLED:
         scheduler.add_job(
@@ -209,14 +239,12 @@ def start_scheduler() -> BackgroundScheduler:
             "interval",
             weeks=1,
             id="weekly_digest",
-            next_run_time=None,
         )
     scheduler.add_job(
         run_scheduled_organizes,
         "interval",
         minutes=settings.SCHEDULED_ORGANIZE_CHECK_INTERVAL_MINUTES,
         id="scheduled_organizes",
-        next_run_time=None,
     )
     scheduler.start()
     return scheduler

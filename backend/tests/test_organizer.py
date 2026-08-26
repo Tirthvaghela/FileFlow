@@ -230,6 +230,34 @@ class TestProcessFileUiPathWiring:
         assert log.category == "Documents"
         assert (watch_folder / "Documents" / "notes.txt").exists()
 
+    def test_does_not_crash_when_uipath_actually_moved_the_file_but_reports_none(
+        self, watch_folder, test_rules, db_session, test_user, monkeypatch
+    ):
+        # A Robot can genuinely complete the physical move and then still
+        # cause execute_move_via_uipath() to return None -- e.g. a non-zero
+        # exit code from some unrelated post-move step, or output Python
+        # can't parse. Simulate exactly that: the fake mover performs the
+        # real move (like a Robot that actually succeeded) but reports
+        # failure the same way those code paths do, by returning None
+        # without ever checking the filesystem itself.
+        def fake_uipath_lies_about_failure(source, dest_folder, final_name):
+            dest_folder.mkdir(parents=True, exist_ok=True)
+            source.rename(dest_folder / final_name)
+            return None
+
+        monkeypatch.setattr(organizer, "execute_move_via_uipath", fake_uipath_lies_about_failure)
+        source = _write(watch_folder / "notes.txt", "hi")
+
+        log = process_file(source, db_session, test_user)
+
+        # Must not have raised trying to rename an already-gone source, and
+        # the operation must still be logged/undoable -- not silently lost
+        # just because the Robot's own status report was unreliable.
+        assert log is not None
+        assert log.category == "Documents"
+        assert (watch_folder / "Documents" / "notes.txt").exists()
+        assert not source.exists()
+
 
 class TestBuildFinalName:
     def test_unchanged_when_timestamp_rename_disabled(self, test_rules, test_engine):

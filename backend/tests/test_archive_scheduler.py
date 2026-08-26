@@ -212,6 +212,55 @@ class TestScheduledOrganize:
         assert command is not None
         assert command["status"] == "pending"
 
+    def test_direct_organize_logs_the_actual_counts_not_just_that_it_ran(
+        self, test_rules, watch_folder, scheduler_db, monkeypatch, caplog
+    ):
+        """Regression test for a real, confirmed observability gap:
+        organize_existing_files()'s return value (scanned/organized/
+        duplicates/errors) was previously discarded here entirely --
+        unlike archive_old_files() in this same module, which already logs
+        its own count. Without this, "Job 'run_scheduled_organizes'
+        executed successfully" in the log is indistinguishable from an
+        actual "organized 3 files" outcome -- exactly the gap that made
+        the original symptom this task investigates hard to diagnose from
+        logs alone."""
+        test_rules["scheduled_organize_enabled"] = True
+        test_rules["scheduled_organize_time"] = "02:00"
+        monkeypatch.setattr(archive_scheduler, "datetime", _FrozenClock(real_datetime(2026, 1, 1, 3, 0)))
+        loose = watch_folder / "report.pdf"
+        loose.write_text("hi")
+
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="fileflow.archive"):
+            run_scheduled_organizes()
+
+        assert not loose.exists()
+        messages = [r.message for r in caplog.records if r.name == "fileflow.archive"]
+        assert any("scanned 1" in m and "organized 1" in m for m in messages), (
+            f"expected the real organize counts to be logged, got: {messages}"
+        )
+
+    def test_dispatch_to_agent_is_also_logged(
+        self, test_rules, watch_folder, scheduler_db, monkeypatch, caplog
+    ):
+        test_rules["scheduled_organize_enabled"] = True
+        test_rules["scheduled_organize_time"] = "02:00"
+        monkeypatch.setattr(archive_scheduler, "datetime", _FrozenClock(real_datetime(2026, 1, 1, 3, 0)))
+        scheduler_db.users.update_one(
+            {"_id": 1}, {"$set": {"agent_last_seen_at": real_datetime.now(timezone.utc)}}
+        )
+
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="fileflow.archive"):
+            run_scheduled_organizes()
+
+        messages = [r.message for r in caplog.records if r.name == "fileflow.archive"]
+        assert any("dispatched to agent" in m for m in messages), (
+            f"expected the agent dispatch to be logged, got: {messages}"
+        )
+
 
 class TestStorageThreshold:
     def test_does_nothing_when_no_threshold_configured(self, test_rules, watch_folder, scheduler_db):

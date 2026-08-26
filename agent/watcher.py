@@ -53,6 +53,16 @@ def mark_self_move(path: Path) -> None:
         _self_moves.add(path.resolve())
 
 
+def unmark_self_move(path: Path) -> None:
+    """Cancels a mark_self_move() whose rename never actually happened (the
+    OS-level move that was about to follow it raised instead). Without this,
+    a failed undo would leave a stale marker behind, and _consume_self_move()
+    has no way to distinguish "we moved it" from "we only intended to" -- the
+    very next legitimate download landing at that exact path would be
+    silently swallowed instead of organized."""
+    _consume_self_move(path)
+
+
 def _consume_self_move(path: Path) -> bool:
     with _self_moves_lock:
         resolved = path.resolve()
@@ -163,7 +173,14 @@ def process_download(client, watch_root: Path, outbox_conn, path: Path) -> None:
             dest_path.unlink()
 
         if execute_move_via_uipath(path, dest_path.parent, dest_path.name) is None:
-            path.rename(dest_path)
+            # See the equivalent guard in backend/automation/organizer.py's
+            # process_file: a Robot that actually completed the move but
+            # failed to *report* it cleanly (non-zero exit, bad output)
+            # returns None just like one that never ran at all -- rename()
+            # would raise on the now-missing source in that case, losing
+            # this activity report even though the file is really there.
+            if path.exists() or not dest_path.exists():
+                path.rename(dest_path)
 
     outbox.enqueue_activity(
         outbox_conn,

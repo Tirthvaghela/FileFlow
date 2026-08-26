@@ -23,7 +23,7 @@ from services.notification_service import notify
 from services.uipath_service import execute_move_via_uipath
 
 from agent import outbox, rules_cache, updater
-from agent.watcher import mark_self_move, move_lock, process_download
+from agent.watcher import mark_self_move, move_lock, process_download, unmark_self_move
 
 logger = logging.getLogger("fileflow.agent.commands")
 
@@ -55,6 +55,11 @@ def _do_undo(payload: dict) -> tuple[bool, str | None]:
             mark_self_move(source)
             dest.rename(source)
         except OSError as exc:
+            # The rename never happened -- undo the mark_self_move() above
+            # too, or the next real download landing at this exact path
+            # would be silently swallowed by a marker for a move that
+            # never actually occurred.
+            unmark_self_move(source)
             return False, str(exc)
     return True, None
 
@@ -125,7 +130,14 @@ def _do_organize_existing(client, watch_root: Path, outbox_conn) -> dict:
                 if action == "replaced" and dest_path.exists():
                     dest_path.unlink()
                 if execute_move_via_uipath(path, dest_path.parent, dest_path.name) is None:
-                    path.rename(dest_path)
+                    # See the equivalent guard in watcher.py's
+                    # process_download / organizer.py's process_file: a
+                    # Robot that actually completed the move but failed to
+                    # *report* it cleanly looks identical to one that never
+                    # ran, and rename() would raise on the now-missing
+                    # source in that case.
+                    if path.exists() or not dest_path.exists():
+                        path.rename(dest_path)
 
             outbox.enqueue_activity(
                 outbox_conn,
@@ -151,7 +163,17 @@ def _handle(client, watch_root: Path, command: dict, outbox_conn) -> None:
     """Computes the command's result exactly once, then durably queues the
     completion report -- delivering that report is retried by
     flush_outbox(), but the action itself (which may have already moved a
-    real file) never runs a second time just because reporting failed."""
+    real file) never runs a second time just because reporting failed.
+
+    That "exactly once" only held within a single call until this guard
+    existed: the backend only stops redelivering a command once it durably
+    receives a completion report, so a command whose first report is still
+    queued locally (backend briefly unreachable, or just hasn't been
+    flushed yet this cycle) would otherwise get handed to this function
+    again by the next poll cycle -- running undo/reclassify/organize-
+    existing a second time for real, not just retrying the report."""
+    if outbox.has_pending_completion(outbox_conn, command["id"]):
+        return
     command_type = command["type"]
     payload = command["payload"]
     result: dict | None = None
@@ -196,18 +218,27 @@ def retry_pending_files(client, watch_root: Path, outbox_conn) -> bool:
 
 
 def poll_forever(
-    client, watch_root: Path, outbox_conn, on_before_update_exit=None, get_handler=None
+    client, watch_root: Path, outbox_conn, on_before_update_exit=None, get_handler=None, get_watch_root=None
 ) -> None:
     backoff = POLL_INTERVAL_SECONDS
     next_update_check = 0.0
     while True:
         healthy = True
         try:
+            # Re-resolved every iteration, like get_handler() just below --
+            # a Reconfigure that changes the watch folder mid-run must not
+            # leave the rest of this thread's life operating against the
+            # folder it happened to be started with. Without this,
+            # reclassify/organize_existing commands (and pending-file
+            # retries) kept computing destinations against the OLD folder
+            # forever, even after the handler/observer had already
+            # correctly swapped to the new one.
+            current_watch_root = get_watch_root() if get_watch_root is not None else watch_root
             outbox.flush_outbox(client, outbox_conn)
-            if not retry_pending_files(client, watch_root, outbox_conn):
+            if not retry_pending_files(client, current_watch_root, outbox_conn):
                 healthy = False
             for command in client.get_commands():
-                _handle(client, watch_root, command, outbox_conn)
+                _handle(client, current_watch_root, command, outbox_conn)
 
             # Syncs the website's "Real-time monitoring" toggle into the
             # live watcher every cycle -- get_handler() (not a handler

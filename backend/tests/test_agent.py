@@ -286,6 +286,43 @@ class TestDualModeOrganizeExisting:
         commands = client.get("/api/agent/commands", headers=_agent_headers(client)).json()
         assert any(c["type"] == "organize_existing" for c in commands)
 
+    def test_completion_result_counts_are_logged_not_silently_discarded(self, client, caplog):
+        """Regression test for a real, confirmed observability gap: unlike
+        reclassify (whose result.destination_path is read and applied),
+        complete_command() previously accepted an organize_existing
+        command's result (scanned/organized/duplicates/errors counts) in
+        the request body and then never referenced it anywhere -- not
+        stored, not logged. That left no trace anywhere of whether a
+        remote agent's scheduled or manual "organize existing files" run
+        actually did anything once it picked up the command, which is
+        exactly the missing piece needed to answer "why didn't my files
+        get organized" from the logs alone."""
+        _connect_agent(client)
+        client.post("/api/organize-existing")
+        headers = _agent_headers(client)
+        command = next(
+            c for c in client.get("/api/agent/commands", headers=headers).json()
+            if c["type"] == "organize_existing"
+        )
+
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="fileflow.agent_routes"):
+            resp = client.post(
+                f"/api/agent/commands/{command['id']}/complete",
+                headers=headers,
+                json={
+                    "success": True,
+                    "result": {"scanned": 3, "organized": 1, "duplicates": 0, "errors": 2},
+                },
+            )
+
+        assert resp.status_code == 200
+        messages = [r.message for r in caplog.records if r.name == "fileflow.agent_routes"]
+        assert any(
+            "scanned 3" in m and "organized 1" in m and "2 error" in m for m in messages
+        ), f"expected the result counts to be logged, got: {messages}"
+
 
 @pytest.fixture
 def fake_release():

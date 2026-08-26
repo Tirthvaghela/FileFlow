@@ -11,6 +11,27 @@ def conn(tmp_path):
     return outbox.open_queue(tmp_path / "test_outbox.db")
 
 
+def test_open_queue_recovers_from_a_corrupted_database_file(tmp_path):
+    """Regression test for a real, confirmed bug: open_queue() had no
+    try/except around CREATE TABLE, so a genuinely corrupt/non-SQLite file
+    at the outbox's path (disk corruption, external interference) raised
+    an uncaught sqlite3.DatabaseError -- crashing the whole agent before
+    main() got anywhere near showing a tray icon or notification, the same
+    "silent death, no console, no clue why" pattern already fixed this
+    session for config.json and rules_cache.json. Unlike those, nothing
+    here needs the user's input to recover -- the outbox only holds
+    not-yet-delivered reports, not the underlying file-organizing work --
+    so open_queue() now starts fresh automatically instead of crashing."""
+    path = tmp_path / "corrupt.db"
+    path.write_text("this is not a sqlite database file at all, just garbage text")
+
+    conn = outbox.open_queue(path)  # must not raise
+
+    # The fresh queue must be genuinely usable afterward.
+    item_id = outbox.enqueue_activity(conn, client_ref="x")
+    assert [row["id"] for row in outbox.due_items(conn, "activity")] == [item_id]
+
+
 def test_enqueue_is_immediately_due(conn):
     item_id = outbox.enqueue_activity(conn, original_filename="a.txt")
     due = outbox.due_items(conn, "activity")
@@ -43,6 +64,34 @@ def test_bump_failure_increases_delay_with_repeated_attempts(conn):
         "SELECT next_attempt_at FROM outbox WHERE id = ?", (item_id,)
     ).fetchone()[0]
     assert second_due > first_due
+
+
+def test_bump_failure_does_not_overflow_after_thousands_of_consecutive_failures(conn):
+    """Regression test for a real, confirmed bug: 2 ** (attempts - 1) was
+    computed in full before being handed to min(..., _MAX_BACKOFF_SECONDS),
+    so an item stuck failing for ~3.5+ continuous days (reachable by pure
+    time passing against a permanently unreachable backend -- attempts is
+    persisted here, so it's never reset, including across a process
+    restart; no manual tampering needed) hit a Python int too large for
+    float() to represent, and bump_failure() raised an uncaught
+    OverflowError -- confirmed directly at attempts=1025 -- instead of
+    just applying the same _MAX_BACKOFF_SECONDS cap every other large
+    attempts count already got. Jumping straight to attempts=1024 here
+    (instead of 1024 real sequential calls) reproduces the exact same
+    real code path -- SQLite doesn't care how attempts got to that value,
+    only bump_failure()'s own arithmetic does."""
+    item_id = outbox.enqueue_command_complete(conn, command_id=1, success=True)
+    conn.execute("UPDATE outbox SET attempts = 1024 WHERE id = ?", (item_id,))
+    conn.commit()
+
+    outbox.bump_failure(conn, item_id)  # must not raise OverflowError
+
+    row = conn.execute(
+        "SELECT attempts, next_attempt_at FROM outbox WHERE id = ?", (item_id,)
+    ).fetchone()
+    assert row[0] == 1025
+    delay = row[1] - time.time()
+    assert 250 < delay <= outbox._MAX_BACKOFF_SECONDS, "must still apply the normal max backoff cap"
 
 
 class _FakeResponse:

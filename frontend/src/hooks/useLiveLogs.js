@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { getLogs, wsUrl } from "../services/api.js";
 
 export function useLiveLogs(limit = 50) {

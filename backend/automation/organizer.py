@@ -44,6 +44,7 @@ __all__ = [
     "undo_specific_operation",
     "reclassify_file",
     "list_category_files",
+    "list_category_stats",
     "delete_category_file",
 ]
 
@@ -103,14 +104,28 @@ def process_file(source_path: Path, db, user: dict) -> Document | None:
         # plain Python move -- organizing a file must never depend on RPA
         # infrastructure being available.
         if execute_move_via_uipath(source_path, dest_path.parent, dest_path.name) is None:
-            # .rename(), not shutil.move(): shutil's own fallback silently
-            # absorbs a "destination already exists" collision by copying
-            # over it instead of raising. Belt-and-suspenders alongside
-            # _move_lock above -- the lock is what actually prevents the
-            # race; this makes sure a *non*-racing failure (e.g. the OS
-            # refusing the rename for an unrelated reason) surfaces as a
-            # normal error instead of silently overwriting something.
-            source_path.rename(dest_path)
+            if not source_path.exists() and dest_path.exists():
+                # execute_move_via_uipath() only reports success once it has
+                # confirmed the destination actually exists -- but several of
+                # its failure modes (a non-zero exit code, unparsable output)
+                # return None without ever checking the filesystem. A Robot
+                # that genuinely completed the move and then merely failed to
+                # *report* it cleanly looks identical to one that never ran.
+                # Trust what's really on disk over the Robot's own status in
+                # that specific case, rather than calling rename() on a
+                # source that's already gone -- that would raise and abandon
+                # this operation with no activity log entry at all, even
+                # though the file genuinely landed in the right place.
+                pass
+            else:
+                # .rename(), not shutil.move(): shutil's own fallback silently
+                # absorbs a "destination already exists" collision by copying
+                # over it instead of raising. Belt-and-suspenders alongside
+                # _move_lock above -- the lock is what actually prevents the
+                # race; this makes sure a *non*-racing failure (e.g. the OS
+                # refusing the rename for an unrelated reason) surfaces as a
+                # normal error instead of silently overwriting something.
+                source_path.rename(dest_path)
 
     log = insert_with_id(
         db,
@@ -447,6 +462,53 @@ def list_category_files(user: dict, category: str) -> list[dict]:
                 }
             )
     return files
+
+
+def list_category_stats(user: dict, archive_folder: str) -> list[dict]:
+    """Per-category file count and total size, across every watch folder
+    the account has -- a live disk read, same as list_category_files, so
+    the Categories overview always agrees with what a category's own detail
+    page shows. Deliberately NOT sourced from activity_log: a purely
+    additive historical aggregate never learns about a file that was later
+    deleted, reclassified elsewhere, or archived out of the category, so a
+    category built that way keeps showing up (with a stale count) forever
+    after every file that was ever organized into it is gone. The archive
+    folder itself is excluded -- it's internal housekeeping, not a
+    category, matching activity_log's own "archived" action never counting
+    toward any category either."""
+    totals: dict[str, dict] = {}
+    for root in all_watch_folders(user):
+        if not root.is_dir():
+            continue
+        for entry in root.iterdir():
+            if not entry.is_dir() or entry.name == archive_folder:
+                continue
+            count = 0
+            size_bytes = 0
+            try:
+                children = list(entry.iterdir())
+            except OSError:
+                continue
+            for f in children:
+                if not f.is_file():
+                    continue
+                try:
+                    size_bytes += f.stat().st_size
+                except OSError:
+                    continue
+                count += 1
+            if count == 0:
+                continue
+            bucket = totals.setdefault(entry.name, {"count": 0, "size_bytes": 0})
+            bucket["count"] += count
+            bucket["size_bytes"] += size_bytes
+
+    rows = [
+        {"category": name, "count": data["count"], "size_bytes": data["size_bytes"]}
+        for name, data in totals.items()
+    ]
+    rows.sort(key=lambda r: r["size_bytes"], reverse=True)
+    return rows
 
 
 def delete_category_file(db, user: dict, category: str, file_path: str) -> tuple[bool, str]:

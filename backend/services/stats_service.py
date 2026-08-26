@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
 from models.schemas import (
-    CategorySizeStat,
     CategoryStat,
     DailyStat,
     StatsOut,
@@ -77,28 +76,6 @@ def get_stats(db, user_id: int) -> StatsOut:
         by_category=by_category,
         last_7_days=last_7_days,
     )
-
-
-def get_category_sizes(db, user_id: int) -> list[CategorySizeStat]:
-    rows = list(
-        db.activity_log.aggregate(
-            [
-                {"$match": {"user_id": user_id, "action": {"$in": ORGANIZED_ACTIONS}}},
-                {
-                    "$group": {
-                        "_id": "$category",
-                        "count": {"$sum": 1},
-                        "size_bytes": {"$sum": "$file_size"},
-                    }
-                },
-                {"$sort": {"size_bytes": -1}},
-            ]
-        )
-    )
-    return [
-        CategorySizeStat(category=r["_id"], count=r["count"], size_bytes=r["size_bytes"])
-        for r in rows
-    ]
 
 
 def get_weekly_reports(db, user_id: int, weeks: int = 4) -> list[WeeklyReportStat]:

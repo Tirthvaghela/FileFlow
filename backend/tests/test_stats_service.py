@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from services.stats_service import get_category_sizes, get_stats, get_weekly_reports
+from services.stats_service import get_stats, get_weekly_reports
 
 
 class TestGetStats:
@@ -74,31 +74,6 @@ class TestGetStats:
         assert stats.last_7_days[-1].count == 1  # today, last bucket
         assert stats.last_7_days[-4].count == 1  # 3 days ago
         assert sum(d.count for d in stats.last_7_days) == 2
-
-
-class TestGetCategorySizes:
-    def test_empty_db_returns_empty_list(self, db_session):
-        assert get_category_sizes(db_session, 1) == []
-
-    def test_orders_by_total_size_descending(self, db_session, log_factory):
-        log_factory(category="Small", file_size=10)
-        log_factory(category="Large", file_size=1000)
-        log_factory(category="Medium", file_size=100)
-
-        rows = get_category_sizes(db_session, 1)
-
-        assert [r.category for r in rows] == ["Large", "Medium", "Small"]
-
-    def test_excludes_non_organized_actions(self, db_session, log_factory):
-        log_factory(category="Documents", action="moved", file_size=100)
-        log_factory(category="Documents", action="duplicate_skipped", file_size=9999)
-        log_factory(category="Documents", action="archived", file_size=9999)
-
-        rows = get_category_sizes(db_session, 1)
-
-        assert len(rows) == 1
-        assert rows[0].count == 1
-        assert rows[0].size_bytes == 100
 
 
 class TestGetWeeklyReports:

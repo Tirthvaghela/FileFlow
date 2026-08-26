@@ -294,7 +294,12 @@ class TestDeleteAccount:
             "/api/auth/register", json={"email": "delcascade@example.com", "password": "supersecret1"}
         )
         user_id = anon_client.get("/api/auth/me").json()["id"]
-        db_session.rules.insert_one({"_id": user_id, "archive_folder": "Archive"})
+        # str(user_id), not the bare int: RuleEngine (rules/rule_engine.py)
+        # always keys a real rules document this way, never by the int id
+        # directly -- inserting it with an int _id here would let this test
+        # pass even if the route's own delete used the wrong type, exactly
+        # the mismatch that let this cleanup silently no-op in production.
+        db_session.rules.insert_one({"_id": str(user_id), "archive_folder": "Archive"})
         db_session.activity_log.insert_one({"_id": 999999, "id": 999999, "user_id": user_id})
         db_session.agent_commands.insert_one({"_id": 999999, "id": 999999, "user_id": user_id})
 
@@ -303,6 +308,6 @@ class TestDeleteAccount:
         )
 
         assert resp.status_code == 200
-        assert db_session.rules.find_one({"_id": user_id}) is None
+        assert db_session.rules.find_one({"_id": str(user_id)}) is None
         assert db_session.activity_log.find_one({"user_id": user_id}) is None
         assert db_session.agent_commands.find_one({"user_id": user_id}) is None

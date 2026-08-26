@@ -12,6 +12,7 @@ import { useLiveLogs } from "../hooks/useLiveLogs.js";
 import TiltCard from "../components/ui/TiltCard.jsx";
 import ConfirmDialog from "../components/ui/ConfirmDialog.jsx";
 import {
+  getCategories,
   getStats,
   getWeeklyReports,
   organizeExistingFiles,
@@ -27,6 +28,7 @@ export default function Dashboard() {
   const { rules } = useRules();
   const { user } = useAuth();
   const [stats, setStats] = useState(null);
+  const [categoryStats, setCategoryStats] = useState(null);
   const watchFolder = user?.watch_folder || "";
   const [actionMessage, setActionMessage] = useState("");
   const [organizing, setOrganizing] = useState(false);
@@ -38,6 +40,15 @@ export default function Dashboard() {
   function loadStats() {
     getStats()
       .then(setStats)
+      .catch(() => {});
+    // A live per-category count, not stats.by_category -- that's an
+    // all-time historical aggregate (right for a Report, which should
+    // never forget what happened), so it keeps a category like "Large
+    // Files" showing up here forever after its one file gets deleted. This
+    // chart is meant to show the current distribution, so it needs the
+    // same live-disk source as the Categories page.
+    getCategories()
+      .then(setCategoryStats)
       .catch(() => {});
     getWeeklyReports(1)
       .then((weeks) => setThisWeek(weeks[0] ?? null))
@@ -194,7 +205,7 @@ export default function Dashboard() {
               badge: running ? "live" : "paused",
               badgeColor: running ? "var(--status-good)" : "var(--text-muted)",
             },
-          ].map((card, i) => (
+          ].map((card) => (
             <motion.div
               key={card.label}
               variants={itemVariants}
@@ -269,7 +280,7 @@ export default function Dashboard() {
               By category
             </h2>
             <p className="mb-3 text-xs text-[var(--text-muted)]">Distribution</p>
-            {stats && <CategoryDonut data={stats.by_category} />}
+            {categoryStats && <CategoryDonut data={categoryStats} />}
           </motion.div>
         </div>
 

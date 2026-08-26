@@ -133,7 +133,6 @@ export default function Settings() {
 
   useEffect(() => {
     setWatchFolder(savedWatchFolder);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedWatchFolder]);
 
   useEffect(() => {

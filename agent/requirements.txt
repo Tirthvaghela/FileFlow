@@ -3,3 +3,14 @@ requests==2.32.3
 plyer==2.1.0
 pystray==0.19.5
 Pillow==12.3.0
+# Not imported directly by any agent/*.py file -- pulled in transitively
+# because agent/watcher.py and agent/commands.py import automation.file_ops
+# and services.uipath_service from backend/, both of which import
+# backend/config/settings.py, which does `from dotenv import load_dotenv`
+# at module level. A venv built from just this file (as the README's
+# packaging instructions assume) is otherwise missing it entirely --
+# confirmed directly: a PyInstaller build from such a venv still succeeds
+# (PyInstaller doesn't hard-fail on an unresolved import), but the
+# resulting FileFlowAgent.exe crashes on launch with "ModuleNotFoundError:
+# No module named 'dotenv'" before agent/main.py's own code ever runs.
+python-dotenv==1.0.1

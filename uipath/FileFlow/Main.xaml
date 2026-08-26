@@ -1,4 +1,8 @@
-<Activity mc:Ignorable="sap sap2010" x:Class="Main" VisualBasic.Settings="{x:Null}" sap2010:WorkflowViewState.IdRef="ActivityBuilder_1" xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:s="clr-namespace:System;assembly=System.Private.CoreLib" xmlns:sio="clr-namespace:System.IO;assembly=System.Private.CoreLib" xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation" xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation" xmlns:scg="clr-namespace:System.Collections.Generic;assembly=System.Private.CoreLib" xmlns:sco="clr-namespace:System.Collections.ObjectModel;assembly=System.Private.CoreLib" xmlns:ui="http://schemas.uipath.com/workflow/activities" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+<Activity mc:Ignorable="sap sap2010" x:Class="Main" VisualBasic.Settings="{x:Null}" sap2010:WorkflowViewState.IdRef="ActivityBuilder_1" xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:s="clr-namespace:System;assembly=System.Private.CoreLib" xmlns:sio="clr-namespace:System.IO;assembly=System.Private.CoreLib" xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation" xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation" xmlns:scg="clr-namespace:System.Collections.Generic;assembly=System.Private.CoreLib" xmlns:sco="clr-namespace:System.Collections.ObjectModel;assembly=System.Private.CoreLib" xmlns:ui="http://schemas.uipath.com/workflow/activities" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:sa="clr-namespace:System.Activities;assembly=System.Activities">
+  <x:Members>
+    <x:Property Name="in_WatchFolder" Type="InArgument(x:String)" />
+    <x:Property Name="in_ActivityLogPath" Type="InArgument(x:String)" />
+  </x:Members>
   <TextExpression.NamespacesForImplementation>
     <sco:Collection x:TypeArguments="x:String">
       <x:String>System.Activities</x:String>
@@ -92,6 +96,8 @@
       <Variable x:TypeArguments="x:String" Name="destFolderPath" />
       <Variable x:TypeArguments="x:String" Name="finalFileName" />
       <Variable x:TypeArguments="x:String" Name="destinationPath" />
+      <Variable x:TypeArguments="x:String" Name="watchFolder" />
+      <Variable x:TypeArguments="x:String" Name="activityLogPath" />
     </Sequence.Variables>
     <sap:WorkflowViewStateService.ViewState>
       <scg:Dictionary x:TypeArguments="x:String, x:Object">
@@ -99,9 +105,28 @@
       </scg:Dictionary>
     </sap:WorkflowViewStateService.ViewState>
 
+    <Assign DisplayName="Resolve watch folder (argument, or TestDownloads next to this project)" sap:VirtualizedContainerService.HintSize="452,175" sap2010:WorkflowViewState.IdRef="Assign_ResolveWatchFolder">
+      <Assign.To>
+        <OutArgument x:TypeArguments="x:String">[watchFolder]</OutArgument>
+      </Assign.To>
+      <Assign.Value>
+        <InArgument x:TypeArguments="x:String">[If(String.IsNullOrEmpty(in_WatchFolder), System.IO.Path.Combine(Environment.CurrentDirectory, "TestDownloads"), in_WatchFolder)]</InArgument>
+      </Assign.Value>
+    </Assign>
+
+    <Assign DisplayName="Resolve activity log path (argument, or ActivityLog.csv next to this project)" sap:VirtualizedContainerService.HintSize="452,175" sap2010:WorkflowViewState.IdRef="Assign_ResolveActivityLogPath">
+      <Assign.To>
+        <OutArgument x:TypeArguments="x:String">[activityLogPath]</OutArgument>
+      </Assign.To>
+      <Assign.Value>
+        <InArgument x:TypeArguments="x:String">[If(String.IsNullOrEmpty(in_ActivityLogPath), System.IO.Path.Combine(Environment.CurrentDirectory, "ActivityLog.csv"), in_ActivityLogPath)]</InArgument>
+      </Assign.Value>
+    </Assign>
+
     <ui:InvokeWorkflowFile DisplayName="1. Detected -- Invoke DetectFiles.xaml" WorkflowFileName="DetectFiles.xaml" sap:VirtualizedContainerService.HintSize="452,175" sap2010:WorkflowViewState.IdRef="InvokeWorkflowFile_1">
       <ui:InvokeWorkflowFile.Arguments>
-        <scg:Dictionary x:TypeArguments="x:String, x:Object">
+        <scg:Dictionary x:TypeArguments="x:String, sa:Argument">
+          <InArgument x:TypeArguments="x:String" x:Key="in_WatchFolder">[watchFolder]</InArgument>
           <OutArgument x:TypeArguments="scg:List(x:String)" x:Key="out_Files">[sourceFiles]</OutArgument>
         </scg:Dictionary>
       </ui:InvokeWorkflowFile.Arguments>
@@ -122,7 +147,7 @@
 
             <ui:InvokeWorkflowFile DisplayName="2. Classified -- Invoke ClassifyFile.xaml" WorkflowFileName="ClassifyFile.xaml" sap:VirtualizedContainerService.HintSize="452,175" sap2010:WorkflowViewState.IdRef="InvokeWorkflowFile_2">
               <ui:InvokeWorkflowFile.Arguments>
-                <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                <scg:Dictionary x:TypeArguments="x:String, sa:Argument">
                   <InArgument x:TypeArguments="x:String" x:Key="in_FilePath">[currentText]</InArgument>
                   <OutArgument x:TypeArguments="x:String" x:Key="out_DestFolder">[destFolder]</OutArgument>
                 </scg:Dictionary>
@@ -140,7 +165,7 @@
 
             <ui:InvokeWorkflowFile DisplayName="3. Duplicate check -- Invoke CheckDuplicate.xaml" WorkflowFileName="CheckDuplicate.xaml" sap:VirtualizedContainerService.HintSize="452,175" sap2010:WorkflowViewState.IdRef="InvokeWorkflowFile_3">
               <ui:InvokeWorkflowFile.Arguments>
-                <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                <scg:Dictionary x:TypeArguments="x:String, sa:Argument">
                   <InArgument x:TypeArguments="x:String" x:Key="in_SourceFilePath">[currentText]</InArgument>
                   <InArgument x:TypeArguments="x:String" x:Key="in_DestFolderPath">[destFolderPath]</InArgument>
                   <OutArgument x:TypeArguments="x:String" x:Key="out_FinalFileName">[finalFileName]</OutArgument>
@@ -150,7 +175,7 @@
 
             <ui:InvokeWorkflowFile DisplayName="4. Moved -- Invoke MoveFile.xaml" WorkflowFileName="MoveFile.xaml" sap:VirtualizedContainerService.HintSize="452,175" sap2010:WorkflowViewState.IdRef="InvokeWorkflowFile_4">
               <ui:InvokeWorkflowFile.Arguments>
-                <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                <scg:Dictionary x:TypeArguments="x:String, sa:Argument">
                   <InArgument x:TypeArguments="x:String" x:Key="in_SourceFilePath">[currentText]</InArgument>
                   <InArgument x:TypeArguments="x:String" x:Key="in_DestFolderPath">[destFolderPath]</InArgument>
                   <InArgument x:TypeArguments="x:String" x:Key="in_FinalFileName">[finalFileName]</InArgument>
@@ -161,11 +186,12 @@
 
             <ui:InvokeWorkflowFile DisplayName="5. Logged -- Invoke LogActivity.xaml" WorkflowFileName="LogActivity.xaml" sap:VirtualizedContainerService.HintSize="452,175" sap2010:WorkflowViewState.IdRef="InvokeWorkflowFile_5">
               <ui:InvokeWorkflowFile.Arguments>
-                <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                <scg:Dictionary x:TypeArguments="x:String, sa:Argument">
                   <InArgument x:TypeArguments="x:String" x:Key="in_OriginalFileName">[System.IO.Path.GetFileName(currentText)]</InArgument>
                   <InArgument x:TypeArguments="x:String" x:Key="in_FinalFileName">[finalFileName]</InArgument>
                   <InArgument x:TypeArguments="x:String" x:Key="in_DestFolder">[destFolder]</InArgument>
                   <InArgument x:TypeArguments="x:String" x:Key="in_DestinationPath">[destinationPath]</InArgument>
+                  <InArgument x:TypeArguments="x:String" x:Key="in_ActivityLogPath">[activityLogPath]</InArgument>
                 </scg:Dictionary>
               </ui:InvokeWorkflowFile.Arguments>
             </ui:InvokeWorkflowFile>

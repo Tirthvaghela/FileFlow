@@ -293,21 +293,23 @@ This is genuinely tested end-to-end: `backend/tests/test_uipath_service.py` and 
 
 **It's off by default** (`UIPATH_ENABLED=false`) — the existing, well-tested Python `shutil.move` path is unchanged unless you opt in, and even when enabled, any failure (Robot missing, package not built, timeout, bad output) falls back to the Python move automatically. To enable it, see [Optional: real UiPath Robot integration](#optional-real-uipath-robot-integration) below.
 
-### `uipath/FileFlow/` — standalone 5-workflow demo (known issue)
+### `uipath/FileFlow/` — standalone 5-workflow demo (course requirement)
 
 A separate, more elaborate demo: 5 integrated workflows mirroring the dashboard's full pipeline (Detected → Classified → Duplicate check → Moved → Logged), orchestrated by `Main.xaml` via `Invoke Workflow File`:
 
 | Stage | Workflow | Responsibility |
 |---|---|---|
-| Detected | `DetectFiles.xaml` | Scans the watch folder, returns every file path found |
+| Detected | `DetectFiles.xaml` | Scans the watch folder passed in as its `in_WatchFolder` argument, returns every file path found |
 | Classified | `ClassifyFile.xaml` | Maps a file's extension to a destination category (`.pdf`/`.txt`→Documents, `.jpg`→Images, `.py`→Python Projects, else Others) |
 | Duplicate check | `CheckDuplicate.xaml` | If a file with that name already exists at the destination, renames it `name (1).ext`, `name (2).ext`, etc. until a free name is found |
 | Moved | `MoveFile.xaml` | Creates the destination folder if needed and moves the file into it |
-| Logged | `LogActivity.xaml` | Appends a row (timestamp, original name, final name, category, destination) to a CSV activity log |
+| Logged | `LogActivity.xaml` | Appends a row (timestamp, original name, final name, category, destination) to the CSV activity log at the path passed in as its `in_ActivityLogPath` argument |
 
 This project exists to satisfy the course's requirement to demonstrate the RPA pattern natively in UiPath — it's a standalone reference implementation, entirely separate from the live `FileFlowMove` integration above, and doesn't touch MongoDB, the FastAPI backend, or the dashboard.
 
-**`Main.xaml` currently fails to pack/compile**, confirmed against the real `uip rpa pack` compiler: `Could not load Main.xaml file: 'Missing key value on 'Dictionary' object.' Line number '106'`, from one of the `InvokeWorkflowFile.Arguments` dictionaries used to pass arguments between the 5 workflows. Each of the 4 sub-workflows is individually valid on its own — only the orchestrating `Main.xaml` is affected. Not yet resolved.
+**Packs, analyzes, and runs successfully**, verified with the real UiPath tooling: `uip rpa pack` produces a valid `.nupkg`, `uip rpa analyze` reports zero critical findings and zero errors, and `uip rpa run` completes the full Detect → Classify → Duplicate-check → Move → Log pipeline against real files on disk. An earlier version of `Main.xaml` failed to pack with `Missing key value on 'Dictionary' object` — the root cause was an incorrect Dictionary value type (`x:String, x:Object`) on all five `InvokeWorkflowFile.Arguments` blocks; each needed `System.Activities.Argument` instead, which is what current UiPath.System.Activities actually expects there. Fixed and re-verified against the real compiler, not just re-read.
+
+`Main.xaml` also no longer hardcodes a developer machine's paths: `DetectFiles.xaml` and `LogActivity.xaml` receive their watch folder and CSV log path as `in_WatchFolder` / `in_ActivityLogPath` workflow arguments, and `Main.xaml` defaults both to project-relative paths (via `Environment.CurrentDirectory`) when they're not supplied. The repo ships `uipath/FileFlow/TestDownloads/.gitkeep` so that default folder exists immediately after a fresh clone. Portability was verified directly, not assumed: the whole project was copied to an unrelated folder (`C:\Temp\FileFlowDemo`) and packed and run from there with no arguments at all — no `C:\Users\...`-style path remains anywhere in the workflow source. This is still an academic/course demonstration, not a hardened production package (see [Known issues](#known-issues--not-yet-done) below).
 
 ---
 
@@ -493,6 +495,8 @@ npm run dev
 
 The dashboard will be available at `http://localhost:5173`. Register an account from there — your watch folder, rules, and dashboard are created automatically and are yours alone.
 
+Other frontend commands: `npm test` (Vitest), `npm run lint` (ESLint — flat config in `eslint.config.js`, covering JS/JSX correctness and React Hooks rules), `npm run build` (production build).
+
 ## 4. Optional: the remote agent (Windows)
 
 Easiest path: from the dashboard's navbar, open the **Downloads** menu → **FileFlow Agent (.exe)**, run the installer, and paste in a token generated from Settings → "Generate agent token".
@@ -523,7 +527,7 @@ Off by default (`UIPATH_ENABLED=false`). To turn it on:
 
 ## 6. UiPath standalone demo (course requirement)
 
-Open `uipath/FileFlow/project.json` in UiPath Studio to inspect the 5-workflow pipeline. See [RPA Automation — Current Scope](#-rpa-automation--current-scope) above for its current known issue.
+Open `uipath/FileFlow/project.json` in UiPath Studio to inspect the 5-workflow pipeline, or pack/run it straight from the CLI (`uip rpa pack uipath/FileFlow <output-dir>`, `uip rpa run --file-path Main.xaml --project-dir uipath/FileFlow`). No path needs editing first: by default it watches `uipath/FileFlow/TestDownloads/` (present in the repo right after a fresh clone) and writes its CSV activity log to `uipath/FileFlow/ActivityLog.csv`, both resolved relative to wherever the project itself sits. To point it at a different folder or log file instead, pass `in_WatchFolder` / `in_ActivityLogPath` as workflow input arguments (e.g. `uip rpa run --input-arguments in_WatchFolder=... --input-arguments in_ActivityLogPath=...`). See [RPA Automation — Current Scope](#-rpa-automation--current-scope) above for the full pipeline breakdown.
 
 ---
 
@@ -542,11 +546,12 @@ Originally built as a single-tenant SQLite app, FileFlow has since gone through 
 - **Added scheduled nightly organizing, multiple watch folders per account, regex/content/file-age rule types, and rule template export/import** — see the feature sections above.
 - Replaced a from-scratch task backlog with genuine end-to-end verification for each of the above: real accounts, real files on disk, real HTTP round trips against the live server (not just the test suite) — this is also how a handful of real bugs were caught that the test suite alone missed (a FastAPI default-value quirk that silently dropped a request body field; a browser caching an installer download and never re-fetching a newer one).
 - **Added per-row Undo on the History page** (any operation can now be reversed independently of order, not just the most recent one) and a **category detail page** — clicking a Categories card opens every real file in that folder, sortable by size/date, with a Recycle-Bin-backed delete.
-- **344 tests passing** (293 backend, 24 agent, 27 frontend), verified against real infrastructure (a real MongoDB instance, a real running server, real file drops, a real installed Windows agent, real UiPath execution logs) rather than mocks alone.
+- **Ran a full backend reliability audit and fixed five real bugs it found**: category statistics (and the Dashboard's "by category" chart) now read live from disk instead of a historical `activity_log` aggregate, so a category correctly disappears once every file in it is gone; the scheduler's jobs were being registered with `next_run_time=None`, which silently added every one of them *paused* — the nightly archive sweep, recycle-bin purge, storage-threshold check, weekly digest, and scheduled-organize sweep were running on no schedule at all until this was found and fixed; account deletion wasn't actually removing the account's own rules document (an `int`/`str` `_id` type mismatch meant the delete query matched nothing); the UiPath fallback path could raise and lose an activity-log entry if a Robot genuinely completed a move but failed to report it cleanly; and the scheduled archive sweep plus the storage-threshold auto-archive were the one remaining file-move path not sharing the lock every other mover (`process_file`, undo, reclassify) already uses, closing a real destination-collision race. Also cleaned up stale WebSocket connections on any disconnect, not just the common case.
+- **Fixed the standalone UiPath `Main.xaml` pack failure** (root cause: the wrong Dictionary value type on all five `InvokeWorkflowFile.Arguments` blocks) and made the standalone demo portable — `DetectFiles.xaml`/`LogActivity.xaml` now take `in_WatchFolder`/`in_ActivityLogPath` as workflow arguments instead of a hardcoded developer-machine path, `Main.xaml` defaults both to project-relative paths, and `uipath/FileFlow/TestDownloads/.gitkeep` keeps the default test folder present after a fresh clone. Verified for real with `uip rpa pack`, `uip rpa analyze`, and `uip rpa run` — including copying the whole project to an unrelated folder and running it there successfully with zero arguments. See [RPA Automation — Current Scope](#-rpa-automation--current-scope).
+- **309 backend tests, 24 agent tests, and 27 frontend tests currently pass** (360 total), verified against real infrastructure (a real MongoDB instance, a real running server, real file drops, a real installed Windows agent, real UiPath execution logs) rather than mocks alone.
 
 ## Known issues / not yet done
 
-- `uipath/FileFlow/Main.xaml` fails to pack/compile (see [RPA Automation — Current Scope](#-rpa-automation--current-scope)).
 - No CI, no Docker/deployment setup.
 - `secure=False` on the session cookie needs flipping before any real HTTPS deployment.
 - The remote agent installer is unsigned — Windows SmartScreen/antivirus may flag it; code signing is a paid certificate, out of scope for now.

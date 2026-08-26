@@ -22,3 +22,11 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket, user_id)
+    except Exception:
+        # A dead connection doesn't always surface as WebSocketDisconnect
+        # (a lower-level transport error can too) -- clean it up here as
+        # well instead of leaving a stale entry in
+        # manager.active_connections that would otherwise only ever get
+        # pruned by a future broadcast to this same user (see
+        # ConnectionManager.broadcast's own stale-connection handling).
+        manager.disconnect(websocket, user_id)

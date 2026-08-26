@@ -6,7 +6,7 @@ import { Calendar, Download, FileSearch, FlaskConical, Folder, Pencil, Regex, Ru
 import { buildCategoryColorMap, collectKnownFolders } from "../utils/categoryMeta.js";
 import { previewRule, simulateRules } from "../services/api.js";
 import { useRules } from "../context/RulesContext.jsx";
-import { Flip, gsap, useGSAP } from "../lib/gsap.js";
+import { Flip, useGSAP } from "../lib/gsap.js";
 
 const inputClass =
   "rounded-md border border-[var(--border)] bg-[var(--page)] px-2.5 py-1.5 text-sm text-[var(--text-primary)]";

@@ -83,6 +83,13 @@ def run_setup_wizard(existing: AgentConfig | None = None) -> AgentConfig | None:
         if not backend_url or not token or not watch_folder:
             messagebox.showerror("Missing information", "All three fields are required.")
             return
+        # Resolve to an absolute path before persisting -- same reasoning
+        # as agent/setup.py's equivalent fix: a relative value typed here
+        # has no well-defined meaning (there's no "current directory" a
+        # user typing into a GUI text box could reasonably intend), and
+        # the agent later interprets it relative to whatever directory the
+        # packaged .exe happens to be launched from instead.
+        watch_folder = str(Path(watch_folder).expanduser().resolve())
         save_config(backend_url, token, watch_folder)
         saved["backend_url"] = backend_url
         saved["token"] = token

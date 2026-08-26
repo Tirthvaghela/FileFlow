@@ -121,15 +121,17 @@ class TestStats:
 
 
 class TestCategories:
-    def test_empty_db_returns_empty_list(self, client):
+    def test_empty_watch_folder_returns_empty_list(self, client):
         resp = client.get("/api/categories")
         assert resp.status_code == 200
         assert resp.json() == []
 
-    def test_groups_organized_files_by_category(self, client, db_session):
-        _log(db_session, category="Documents", file_size=100)
-        _log(db_session, category="Documents", file_size=50)
-        _log(db_session, category="Images", file_size=10)
+    def test_groups_files_currently_on_disk_by_category(self, client, watch_folder):
+        (watch_folder / "Documents").mkdir()
+        (watch_folder / "Documents" / "a.pdf").write_text("a" * 100)
+        (watch_folder / "Documents" / "b.pdf").write_text("a" * 50)
+        (watch_folder / "Images").mkdir()
+        (watch_folder / "Images" / "c.png").write_text("a" * 10)
 
         body = client.get("/api/categories").json()
         by_name = {row["category"]: row for row in body}
@@ -137,6 +139,33 @@ class TestCategories:
         assert by_name["Documents"]["count"] == 2
         assert by_name["Documents"]["size_bytes"] == 150
         assert by_name["Images"]["count"] == 1
+
+    def test_a_category_disappears_once_its_last_file_is_gone(
+        self, client, watch_folder, db_session
+    ):
+        # A file that was organized into a category, then later deleted
+        # (or reclassified/archived away), must not leave that category
+        # lingering in the overview forever -- this is a live disk read,
+        # not a historical activity_log aggregate, precisely so a deleted
+        # file's old category stops appearing once nothing is left in it.
+        (watch_folder / "Documents").mkdir()
+        old = watch_folder / "Documents" / "old.pdf"
+        old.write_text("bye")
+        _log(db_session, category="Documents", destination_path=str(old))
+        assert client.get("/api/categories").json()[0]["category"] == "Documents"
+
+        client.request(
+            "DELETE", "/api/categories/Documents/files", json={"path": str(old)}
+        )
+
+        assert client.get("/api/categories").json() == []
+
+    def test_excludes_the_configured_archive_folder(self, client, watch_folder, test_rules):
+        test_rules["archive_folder"] = "Archive"
+        (watch_folder / "Archive").mkdir()
+        (watch_folder / "Archive" / "old.pdf").write_text("hi")
+
+        assert client.get("/api/categories").json() == []
 
 
 class TestRules:

@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +24,8 @@ from models.schemas import (
 )
 from rules.rule_engine import get_rule_engine
 from api.websocket_manager import manager
+
+logger = logging.getLogger("fileflow.agent_routes")
 
 # Every route here is authenticated by a long-lived bearer token (see
 # api/auth.get_current_agent), not the browser's session cookie -- this is
@@ -105,6 +108,20 @@ def complete_command(
         log_id = command["payload"].get("log_id")
         if log_id is not None:
             release_undo_claim(db, log_id)
+
+    if command["type"] == "organize_existing":
+        # The agent's own scan/organize/duplicate/error counts -- otherwise
+        # received here and discarded entirely (only reclassify's result is
+        # used below), leaving no trace anywhere of whether a remote
+        # scheduled or manual "organize existing files" run actually did
+        # anything once the agent picked it up.
+        result = body.result or {}
+        logger.info(
+            "organize_existing command %d for user %d completed: scanned %s, organized %s, "
+            "%s duplicate(s), %s error(s).",
+            command_id, user["id"],
+            result.get("scanned"), result.get("organized"), result.get("duplicates"), result.get("errors"),
+        )
 
     if command["type"] == "reclassify" and body.success:
         log_id = command["payload"].get("log_id")

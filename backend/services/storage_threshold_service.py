@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 
+from automation.file_ops import move_lock as _move_lock
 from automation.organizer import list_category_files
 from config.settings import all_watch_folders
 from database.db import insert_with_id
@@ -57,17 +58,23 @@ def _archive_oldest_until_under_threshold(
         archive_root = watch_root / archive_folder_name
         archive_root.mkdir(parents=True, exist_ok=True)
 
-        dest = archive_root / path.name
-        counter = 1
-        while dest.exists():
-            dest = archive_root / f"{path.stem} ({counter}){path.suffix}"
-            counter += 1
+        # Same _move_lock as the age-based archive sweep (scheduler/
+        # archive_scheduler.py) -- this auto-archive can run in the same
+        # scheduled pass and both resolve/rename into the same Archive
+        # folder, so the destination-collision race that lock exists for
+        # applies here identically.
+        with _move_lock:
+            dest = archive_root / path.name
+            counter = 1
+            while dest.exists():
+                dest = archive_root / f"{path.stem} ({counter}){path.suffix}"
+                counter += 1
 
-        try:
-            path.rename(dest)
-        except OSError:
-            logger.warning("Storage-threshold auto-archive: %s vanished before it could move.", path)
-            continue
+            try:
+                path.rename(dest)
+            except OSError:
+                logger.warning("Storage-threshold auto-archive: %s vanished before it could move.", path)
+                continue
 
         insert_with_id(
             db,
