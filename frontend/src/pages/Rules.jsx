@@ -185,8 +185,10 @@ export default function Rules() {
       await saveRules(next);
       setStatus("Saved");
       setTimeout(() => setStatus(""), 1500);
+      return true;
     } catch {
       setStatus("Failed to save");
+      return false;
     }
   }
 
@@ -406,24 +408,25 @@ export default function Rules() {
     setAddingRule(true);
     captureFlip();
     try {
+      let saved = false;
       if (form.type === "extension") {
         const ext = form.match.trim().startsWith(".") ? form.match.trim() : `.${form.match.trim()}`;
-        await persist((current) => ({
+        saved = await persist((current) => ({
           ...current,
           extension_rules: { ...current.extension_rules, [ext]: form.folder.trim() },
         }));
       } else if (form.type === "keyword") {
-        await persist((current) => ({
+        saved = await persist((current) => ({
           ...current,
           keyword_rules: [...current.keyword_rules, { keyword: form.match.trim(), folder: form.folder.trim() }],
         }));
       } else if (form.type === "regex") {
-        await persist((current) => ({
+        saved = await persist((current) => ({
           ...current,
           regex_rules: [...(current.regex_rules || []), { pattern: form.match.trim(), folder: form.folder.trim() }],
         }));
       } else if (form.type === "content") {
-        await persist((current) => ({
+        saved = await persist((current) => ({
           ...current,
           content_keyword_rules: [
             ...(current.content_keyword_rules || []),
@@ -431,7 +434,7 @@ export default function Rules() {
           ],
         }));
       } else if (form.type === "date") {
-        await persist((current) => ({
+        saved = await persist((current) => ({
           ...current,
           date_rules: [
             ...(current.date_rules || []),
@@ -439,7 +442,11 @@ export default function Rules() {
           ],
         }));
       }
-      setForm(emptyForm);
+      // Only clear the form on a confirmed save -- a rejected rule (e.g. an
+      // invalid or ReDoS-shaped regex pattern the backend rejects) must
+      // leave what the user typed in place so they can see and fix it,
+      // not silently discard it alongside the generic "Failed to save".
+      if (saved) setForm(emptyForm);
     } finally {
       setAddingRule(false);
     }
