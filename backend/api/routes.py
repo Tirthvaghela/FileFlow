@@ -228,7 +228,11 @@ def _check_folder_available(db, resolved: Path, user_id: int, ignore: Path | Non
     watcher and organize-existing both operate on whatever folder they're
     pointed at, recursively. `ignore` is the one folder allowed to
     "overlap" itself -- the primary folder being replaced by the same
-    path, for instance."""
+    path, for instance.
+
+    This is the only boundary enforced on a chosen watch folder -- there
+    is no check against any operator-defined root, by design (see
+    resolve_watch_folder's docstring, config/settings.py)."""
     for other in db.users.find({}, {"id": 1, "watch_folder": 1, "additional_watch_folders": 1}):
         for folder in all_watch_folders(other):
             if ignore is not None and folder == ignore and other["id"] == user_id:

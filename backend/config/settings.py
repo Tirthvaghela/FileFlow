@@ -136,7 +136,19 @@ settings.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 def resolve_watch_folder(path) -> Path:
     """Validate and create a folder to be watched. Raises OSError if it
-    can't be created (bad path, no permission, etc)."""
+    can't be created (bad path, no permission, etc).
+
+    Deliberately has no containment check against WATCH_FOLDER or any
+    other root -- an account may point its own watch folder at any real
+    path this process can reach; the only boundary enforced anywhere
+    (_check_folder_available, api/routes.py) is *cross-account* overlap.
+    This is the intended, tested contract (backend/tests/test_multi_user_
+    isolation.py) for FileFlow's actual deployment model: one self-hosted
+    instance shared by a trusted group, where "per-account isolation"
+    means accounts can't reach each other's data/files -- not that the
+    backend host's own filesystem is defended from its own registered
+    users. See README's "Known issues" for the deployment assumption this
+    relies on before adding open/untrusted self-service registration."""
     resolved = Path(path).expanduser().resolve()
     resolved.mkdir(parents=True, exist_ok=True)
     return resolved
