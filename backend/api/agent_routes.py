@@ -140,7 +140,21 @@ def complete_command(
 
     db.agent_commands.update_one(
         {"_id": command_id},
-        {"$set": {"status": "done", "success": body.success, "error": body.error}},
+        {
+            "$set": {
+                "status": "done",
+                "success": body.success,
+                "error": body.error,
+                # Previously discarded after the log line above -- persisting
+                # it here (not a separate table: this row is already the
+                # natural, single source of truth for this command's
+                # lifecycle) is what lets a browser-facing "recent activity"
+                # view show real organize/duplicate/error counts instead of
+                # just a bare "done" status.
+                "result": body.result,
+                "completed_at": datetime.now(timezone.utc),
+            }
+        },
     )
     return {"success": True}
 

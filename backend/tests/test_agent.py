@@ -1,8 +1,10 @@
 import hashlib
 
 import pytest
+from fastapi.testclient import TestClient
 
 from config.agent_release import AGENT_LATEST_VERSION, AGENT_RELEASE_PATH, agent_release_sha256
+from main import app
 from tests.test_routes import _log, client  # noqa: F401 -- reused fixtures
 
 
@@ -272,6 +274,53 @@ class TestDualModeReclassify:
         refreshed = db_session.activity_log.find_one({"_id": log.id})
         assert refreshed["category"] == "Archive"
         assert refreshed["destination_path"] == str(watch_folder / "Archive" / "e.txt")
+
+    def test_completing_a_nonexistent_command_id_is_a_404(self, client):
+        headers = _agent_headers(client)
+
+        resp = client.post(
+            "/api/agent/commands/999999/complete", headers=headers, json={"success": True}
+        )
+
+        assert resp.status_code == 404
+
+    def test_completing_another_users_command_is_a_404_not_a_leak(
+        self, client, db_session, watch_folder
+    ):
+        """complete_command()'s lookup is {"_id": command_id, "user_id":
+        user["id"]} -- scoped from the authenticated agent's own account,
+        never a client-supplied value. A command_id that's real but belongs
+        to a different account must be indistinguishable from one that
+        doesn't exist at all, not silently completable or informative
+        about its existence."""
+        other = TestClient(app)
+        other_resp = other.post(
+            "/api/auth/register", json={"email": "other-agent-user@example.com", "password": "test-password-123"}
+        )
+        assert other_resp.status_code == 201
+        other_user_id = other_resp.json()["id"]
+        db_session.users.update_one({"_id": other_user_id}, {"$set": {"watch_folder": str(watch_folder)}})
+        _connect_agent(other)
+        other.post("/api/organize-existing")
+        # Minted last, deliberately -- issuing a token regenerates it and
+        # invalidates any previously-issued one (same pattern as every
+        # other test in this file).
+        other_headers = _agent_headers(other)
+        other_command = next(
+            c for c in other.get("/api/agent/commands", headers=other_headers).json()
+            if c["type"] == "organize_existing"
+        )
+
+        headers = _agent_headers(client)
+        resp = client.post(
+            f"/api/agent/commands/{other_command['id']}/complete", headers=headers, json={"success": True}
+        )
+
+        assert resp.status_code == 404
+        still_pending = other.get("/api/agent/commands", headers=_agent_headers(other)).json()
+        assert any(c["id"] == other_command["id"] for c in still_pending), (
+            "the other user's command must remain untouched/pending"
+        )
 
 
 class TestDualModeOrganizeExisting:

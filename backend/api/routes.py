@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
+from pymongo.errors import DuplicateKeyError
 
 from api.auth import get_current_user
 from automation.organizer import (
@@ -20,12 +21,13 @@ from automation.organizer import (
 )
 from config.agent_release import AGENT_RELEASE_PATH
 from config.onboarding_templates import ONBOARDING_TEMPLATES
-from config.settings import all_watch_folders, paths_overlap, resolve_watch_folder, settings
+from config.settings import all_watch_folders, paths_overlap, resolve_watch_folder
 from database.db import get_db
 from models.models import Document
 from models.schemas import (
     ActivityLogOut,
     AdditionalWatchFolderRequest,
+    AgentCommandHistoryOut,
     CategoryFileDeleteRequest,
     CategoryFileOut,
     CategorySizeStat,
@@ -50,7 +52,7 @@ from models.schemas import (
 from monitor.watcher import add_additional_watch, remove_additional_watch, update_watch_folder
 from rules.classifier import is_within_watch_folder
 from rules.rule_engine import get_rule_engine
-from services.digest_service import send_weekly_digest
+from services.digest_service import DigestOutcome, send_weekly_digest
 from services.report_service import build_csv, build_excel, build_pdf
 from services.agent_service import enqueue_agent_command, is_agent_connected
 from services.rule_preview_service import preview_rule
@@ -69,6 +71,44 @@ def list_logs(limit: int = 50, db=Depends(get_db), user=Depends(get_current_user
         db.activity_log.find({"user_id": user["id"]}).sort("_id", -1).limit(min(limit, 500))
     )
     return list(logs)
+
+
+@router.get("/agent-commands", response_model=list[AgentCommandHistoryOut])
+def list_agent_commands(
+    limit: int = 20,
+    type: str | None = None,
+    source: str | None = None,
+    log_id: int | None = None,
+    db=Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Recent agent command activity (undo/reclassify/organize_existing),
+    newest first -- the browser-facing counterpart to GET /api/agent/commands
+    (agent_routes.py), which only ever returns the calling agent's own
+    still-pending work. user_id comes from the authenticated session only,
+    never a client-supplied value, so one account can never see another's
+    command history no matter what's passed in the query string.
+
+    `source` filters on payload.source ("scheduled" vs "manual" -- see
+    archive_scheduler.py's and this module's own organize_existing route,
+    the only two places that set it). `log_id` filters on payload.log_id
+    (undo/reclassify only -- History uses it to correlate a specific row
+    with the command it triggered). Neither filter, nor the response's own
+    log_id field below, ever exposes the rest of the raw payload --
+    AgentCommandHistoryOut deliberately omits everything else in it."""
+    query: dict = {"user_id": user["id"]}
+    if type is not None:
+        query["type"] = type
+    if source is not None:
+        query["payload.source"] = source
+    if log_id is not None:
+        query["payload.log_id"] = log_id
+    docs = db.agent_commands.find(query).sort("_id", -1).limit(min(limit, 100))
+    results = []
+    for doc in docs:
+        doc["log_id"] = doc.get("payload", {}).get("log_id")
+        results.append(doc)
+    return results
 
 
 @router.get("/stats", response_model=StatsOut)
@@ -357,12 +397,20 @@ def reclassify(
         if not category or not is_within_watch_folder(category, watch_root):
             return ReclassifyResult(success=False, message="Invalid destination category.")
 
-        enqueue_agent_command(
-            db,
-            user["id"],
-            "reclassify",
-            {"log_id": log_id, "source_path": log.destination_path, "category": category},
-        )
+        try:
+            enqueue_agent_command(
+                db,
+                user["id"],
+                "reclassify",
+                {"log_id": log_id, "source_path": log.destination_path, "category": category},
+            )
+        except DuplicateKeyError:
+            # A pending reclassify command for this exact row already
+            # exists (the partial unique index in database/db.py catching
+            # a concurrent duplicate request) -- it will still be picked up
+            # and processed, so this is still an accurate "queued", not a
+            # failure.
+            pass
         return ReclassifyResult(
             success=True, message="Queued -- your agent will pick this up shortly.", queued=True
         )
@@ -376,7 +424,10 @@ def organize_existing(db=Depends(get_db), user=Depends(get_current_user)):
     """One-time sweep of files already sitting in the watch folder root,
     e.g. everything downloaded before FileFlow started watching."""
     if is_agent_connected(user):
-        enqueue_agent_command(db, user["id"], "organize_existing", {})
+        # source: "manual" mirrors archive_scheduler.py's own "scheduled"
+        # tag on the exact same command type -- the only thing that tells
+        # the recent-activity view apart which one triggered this run.
+        enqueue_agent_command(db, user["id"], "organize_existing", {"source": "manual"})
         return OrganizeExistingResult(queued=True)
     return organize_existing_files(db, user)
 
@@ -428,14 +479,20 @@ def weekly_reports(weeks: int = 4, db=Depends(get_db), user=Depends(get_current_
 @router.post("/reports/send-digest", response_model=DigestResult)
 def send_digest(db=Depends(get_db), user=Depends(get_current_user)):
     """Manually trigger the weekly email digest on demand -- lets a demo
-    show it without waiting for the scheduled weekly run. Requires
-    SMTP_USERNAME/SMTP_PASSWORD to be set; otherwise reports back that it
-    was skipped."""
-    if not settings.SMTP_USERNAME or not settings.SMTP_PASSWORD:
-        return DigestResult(success=False, message="Email sending is not configured.")
-    sent = send_weekly_digest(db, user)
-    if sent:
+    show it without waiting for the scheduled weekly run. send_weekly_
+    digest() itself now distinguishes every reason it might not actually
+    send (nothing to report this week, SMTP not configured, or a real
+    send failure) instead of a bare bool, so this response can say which
+    one actually happened rather than a single generic failure message."""
+    outcome = send_weekly_digest(db, user)
+    if outcome == DigestOutcome.SENT:
         return DigestResult(success=True, message=f"Digest sent to {user['email']}.")
+    if outcome == DigestOutcome.SKIPPED_NO_ACTIVITY:
+        return DigestResult(
+            success=False, message="No activity to report this week -- nothing was sent."
+        )
+    if outcome == DigestOutcome.SKIPPED_SMTP_NOT_CONFIGURED:
+        return DigestResult(success=False, message="Email sending is not configured.")
     return DigestResult(success=False, message="Failed to send the digest -- check server logs.")
 
 

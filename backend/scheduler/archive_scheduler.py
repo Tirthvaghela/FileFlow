@@ -12,7 +12,7 @@ from database.db import db, insert_with_id
 from models.models import new_activity_log
 from rules.rule_engine import get_rule_engine, is_within_watch_folder
 from services.agent_service import enqueue_agent_command, is_agent_connected
-from services.digest_service import send_weekly_digest
+from services.digest_service import DigestOutcome, send_weekly_digest
 from services.recycle_bin_service import purge_all_users_recycle_bins
 from services.storage_threshold_service import check_all_storage_thresholds
 
@@ -134,11 +134,30 @@ def archive_old_files() -> int:
 
 
 def _weekly_digest_job() -> None:
+    counts = {outcome: 0 for outcome in DigestOutcome}
     for user in list(db.users.find()):
         try:
-            send_weekly_digest(db, user)
+            counts[send_weekly_digest(db, user)] += 1
         except Exception:
+            # A crash inside send_weekly_digest itself (e.g. report
+            # generation) -- distinct from the FAILED outcome above, which
+            # covers a *handled* send failure. One user's crash must not
+            # skip the rest, same isolation every other scheduled sweep in
+            # this file already has.
             logger.exception("Weekly digest failed for user %d -- skipping.", user["id"])
+
+    # One summary line per run (this job fires at most weekly, so there's
+    # no per-user-noise concern the way there would be for the 5-minute
+    # command poll or the daily archive sweep) -- makes all four outcomes
+    # distinguishable, including the two that used to be silently
+    # indistinguishable from each other and from an outright failure.
+    logger.info(
+        "Weekly digest: %d sent, %d skipped (no activity), %d skipped (SMTP not configured), %d failed",
+        counts[DigestOutcome.SENT],
+        counts[DigestOutcome.SKIPPED_NO_ACTIVITY],
+        counts[DigestOutcome.SKIPPED_SMTP_NOT_CONFIGURED],
+        counts[DigestOutcome.FAILED],
+    )
 
 
 def _run_scheduled_organize_for_user(user: dict, today: str) -> None:
@@ -167,7 +186,12 @@ def _run_scheduled_organize_for_user(user: dict, today: str) -> None:
         # Only queues the command here -- the agent, not this process, does
         # the actual scan/move, and reports its own outcome asynchronously
         # via POST /api/agent/commands/{id}/complete once it next polls.
-        enqueue_agent_command(db, user["id"], "organize_existing", {})
+        # payload.source is not read by _do_organize_existing (the agent
+        # ignores this command's payload entirely) -- it exists purely so
+        # the recent-activity view can tell a scheduled run apart from a
+        # manual "Organize existing files now" click, which dispatches the
+        # exact same command type (see routes.py's organize_existing route).
+        enqueue_agent_command(db, user["id"], "organize_existing", {"source": "scheduled"})
         logger.info("Scheduled organize for user %d: dispatched to agent.", user["id"])
     else:
         # Unlike enqueue_agent_command above, this runs synchronously and
