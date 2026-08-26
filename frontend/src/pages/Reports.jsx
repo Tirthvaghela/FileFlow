@@ -72,7 +72,7 @@ export default function Reports() {
                   href={pdfReportUrl()}
                   className="rounded-lg bg-[var(--brand)] px-3 py-2 text-sm font-medium text-[var(--brand-foreground)] hover:opacity-90"
                 >
-                  Export PDF
+                  Export PDF (full history)
                 </a>
               </div>
             </div>

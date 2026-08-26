@@ -22,6 +22,26 @@ LOG_HEADERS = [
     "Size (bytes)",
 ]
 
+_FORMULA_TRIGGER_CHARS = ("=", "+", "-", "@")
+
+
+def _sanitize_cell(value: str) -> str:
+    """Neutralizes CSV/Excel formula injection (CWE-1236). Original/final
+    filenames and category names are whatever the user (or whoever dropped
+    the file in their watched folder) named them -- written unescaped, a
+    name starting with =, +, -, or @ is a live formula to Excel/Sheets/
+    LibreOffice, not literal text, when the exported report is opened. For
+    .xlsx this isn't only a risk if a human retypes the value: openpyxl
+    marks any string starting with "=" as a formula cell (data_type "f")
+    at write time, so the formula is already live in the file before
+    anyone opens it. Prefixing with a single quote is the standard
+    mitigation (OWASP CSV Injection) -- it forces literal-text
+    interpretation and costs nothing for the overwhelming majority of
+    filenames that don't start with one of these characters."""
+    if value.startswith(_FORMULA_TRIGGER_CHARS):
+        return "'" + value
+    return value
+
 
 def _log_rows(
     db,
@@ -40,9 +60,9 @@ def _log_rows(
     return [
         [
             log["timestamp"].strftime("%Y-%m-%d %H:%M:%S"),
-            log["original_filename"],
-            log["final_filename"],
-            log["category"],
+            _sanitize_cell(log["original_filename"]),
+            _sanitize_cell(log["final_filename"]),
+            _sanitize_cell(log["category"]),
             log["action"],
             log["file_size"],
         ]
@@ -97,7 +117,7 @@ def build_excel(db, user_id: int) -> bytes:
     for cell in summary[header_row]:
         cell.font = bold
     for cat in stats.by_category:
-        summary.append([cat.category, cat.count])
+        summary.append([_sanitize_cell(cat.category), cat.count])
 
     summary.column_dimensions["A"].width = 28
     summary.column_dimensions["B"].width = 16
