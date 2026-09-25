@@ -242,6 +242,145 @@ class TestDateRules:
 
         assert engine.classify("readme", 100, file_path=target) == "Others"
 
+
+class TestClassificationExplanation:
+    """classify_explained() must describe the exact same decision
+    classify() makes -- never a second, independently re-run evaluation --
+    for every rule type FileFlow actually supports, and must never
+    attribute a match to a rule that didn't really match."""
+
+    def test_keyword_match_explanation(self, engine):
+        result = engine.classify_explained("Invoice_March.pdf", 100)
+
+        assert result["destination"] == "Finance Folder"
+        assert result["match_type"] == "keyword"
+        assert result["matched_value"] == "invoice"
+        assert result["rule_name"] == 'Keyword "invoice"'
+        assert result["priority"] == 1
+
+    def test_regex_match_explanation(self, engine):
+        engine.rules["regex_rules"] = [{"pattern": r"^IMG_\d+", "folder": "Camera"}]
+
+        result = engine.classify_explained("IMG_2024.jpg", 100)
+
+        assert result["destination"] == "Camera"
+        assert result["match_type"] == "regex"
+        assert result["matched_value"] == r"^IMG_\d+"
+        assert result["priority"] == 2
+
+    def test_content_keyword_match_explanation(self, engine, watch_folder):
+        engine.rules["content_keyword_rules"] = [{"keyword": "confidential", "folder": "Private"}]
+        target = watch_folder / "notes.txt"
+        target.write_text("This document is CONFIDENTIAL -- do not share.")
+
+        result = engine.classify_explained("notes.txt", 100, file_path=target)
+
+        assert result["destination"] == "Private"
+        assert result["match_type"] == "content_keyword"
+        assert result["matched_value"] == "confidential"
+        assert result["priority"] == 3
+
+    def test_extension_rule_explanation(self, engine):
+        result = engine.classify_explained("script.py", 100)
+
+        assert result["destination"] == "Python Projects"
+        assert result["match_type"] == "extension"
+        assert result["matched_value"] == ".py"
+        assert result["rule_name"] == 'Extension ".py"'
+        assert result["priority"] == 4
+
+    def test_large_file_explanation(self, engine):
+        one_mb = 1024 * 1024
+        result = engine.classify_explained("photo.jpg", one_mb + 1)
+
+        assert result["destination"] == "Large Files"
+        assert result["match_type"] == "large_file"
+        assert result["priority"] == 5
+
+    def test_date_rule_explanation(self, engine, watch_folder):
+        import os
+        import time
+
+        engine.rules["date_rules"] = [{"older_than_days": 30, "folder": "Old Stuff"}]
+        target = watch_folder / "readme"
+        target.write_text("hi")
+        old = time.time() - 45 * 86400
+        os.utime(target, (old, old))
+
+        result = engine.classify_explained("readme", 100, file_path=target)
+
+        assert result["destination"] == "Old Stuff"
+        assert result["match_type"] == "date"
+        assert result["priority"] == 6
+
+    def test_category_mapping_explanation(self, engine):
+        result = engine.classify_explained("report.pdf", 100)
+
+        assert result["destination"] == "Documents"
+        assert result["match_type"] == "category"
+        assert result["matched_value"] == ".pdf"
+        assert result["rule_name"] == 'Category "Documents"'
+        assert result["priority"] == 7
+
+    def test_auto_extension_grouping_explanation(self, engine):
+        result = engine.classify_explained("archive.zip", 100)
+
+        assert result["destination"] == "ZIP Files"
+        assert result["match_type"] == "auto_extension"
+        assert result["matched_value"] == ".zip"
+        assert result["priority"] == 8
+
+    def test_no_matching_rule_explanation(self, engine):
+        engine.rules["auto_organize_unknown_extensions"] = False
+
+        result = engine.classify_explained("archive.zip", 100)
+
+        assert result["destination"] == "Others"
+        assert result["match_type"] == "default"
+        assert result["matched_value"] is None
+        assert result["rule_name"] is None
+        assert result["priority"] == 9
+
+    def test_correct_rule_identified_when_several_keyword_rules_exist(self, engine):
+        engine.rules["keyword_rules"] = [
+            {"keyword": "invoice", "folder": "Finance Folder"},
+            {"keyword": "report", "folder": "Reports Folder"},
+        ]
+
+        result = engine.classify_explained("Quarterly_Report.pdf", 100)
+
+        assert result["destination"] == "Reports Folder"
+        assert result["matched_value"] == "report"
+
+    def test_a_rule_pointing_outside_the_watch_folder_is_not_attributed_as_the_match(
+        self, engine, tmp_path
+    ):
+        # Same containment rule classify() already enforces -- the
+        # explanation must agree: the invalid rule is skipped entirely,
+        # never reported as if it had actually matched.
+        outside = str(tmp_path / "elsewhere")
+        engine.rules["keyword_rules"] = [{"keyword": "invoice", "folder": outside}]
+
+        result = engine.classify_explained("Invoice_March.pdf", 100)
+
+        assert result["match_type"] != "keyword"
+        assert result["destination"] == "Documents"
+
+    def test_explanation_destination_always_matches_classify(self, engine, watch_folder):
+        # classify() is a thin wrapper over classify_explained() -- the two
+        # must never disagree, for any input.
+        cases = [
+            ("Invoice_March.pdf", 100),
+            ("script.py", 100),
+            ("photo.jpg", 1024 * 1024 + 1),
+            ("archive.zip", 100),
+            ("readme", 100),
+        ]
+        for filename, size in cases:
+            assert engine.classify(filename, size) == engine.classify_explained(filename, size)[
+                "destination"
+            ]
+
     def test_never_matches_without_a_real_file_path(self, engine):
         engine.rules["date_rules"] = [{"older_than_days": 30, "folder": "Old Stuff"}]
         assert engine.classify("readme", 100) == "Others"

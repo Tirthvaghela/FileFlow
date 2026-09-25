@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pymongo.errors import DuplicateKeyError
 
 from api.auth import get_current_user
+from api.rate_limit import RateLimiter, rate_limited
 from automation.organizer import (
     claim_undoable_log,
     claim_undoable_log_by_id,
@@ -15,34 +16,47 @@ from automation.organizer import (
     list_category_files,
     list_category_stats,
     organize_existing_files,
+    plan_organize_existing,
     reclassify_file,
     undo_last_operation,
     undo_specific_operation,
 )
 from config.agent_release import AGENT_RELEASE_PATH
 from config.onboarding_templates import ONBOARDING_TEMPLATES
-from config.settings import all_watch_folders, paths_overlap, resolve_watch_folder
+from config.settings import all_watch_folders, paths_overlap, resolve_watch_folder, settings
 from database.db import get_db
 from models.models import Document
 from models.schemas import (
     ActivityLogOut,
     AdditionalWatchFolderRequest,
     AgentCommandHistoryOut,
+    AIRuleGenerateRequest,
+    AIRuleGenerateResponse,
     CategoryFileDeleteRequest,
     CategoryFileOut,
     CategorySizeStat,
     DeleteResult,
     DigestResult,
+    DuplicateAnalysisRequest,
+    DuplicateAnalysisResult,
+    FileSearchRequest,
+    FileSearchResponse,
     FolderPickOut,
     OnboardingTemplateOut,
+    OrganizationHealthResponse,
     OrganizeExistingResult,
+    OrganizePreviewResult,
     ReclassifyRequest,
     ReclassifyResult,
+    RuleConflictAnalysisRequest,
+    RuleConflictAnalysisResult,
     RulePreviewOut,
     RulePreviewRequest,
     RulesOut,
     RuleSimulationResult,
     StatsOut,
+    UnclassifiedSuggestionRequest,
+    UnclassifiedSuggestionResult,
     UndoResult,
     WatchFolderOut,
     WatchFolderUpdate,
@@ -52,9 +66,15 @@ from models.schemas import (
 from monitor.watcher import add_additional_watch, remove_additional_watch, update_watch_folder
 from rules.classifier import is_within_watch_folder
 from rules.rule_engine import get_rule_engine
+from services.ai_rule_service import generate_rule_proposal
+from services.ai_unclassified_service import generate_unclassified_suggestions
 from services.digest_service import DigestOutcome, send_weekly_digest
+from services.duplicate_service import analyze_duplicates
+from services.file_search_service import run_file_search
+from services.health_service import get_organization_health
 from services.report_service import build_csv, build_excel, build_pdf
 from services.agent_service import enqueue_agent_command, is_agent_connected
+from services.rule_conflict_service import analyze_conflicts
 from services.rule_preview_service import preview_rule
 from services.rule_simulation_service import simulate_rules
 from services.stats_service import get_stats, get_weekly_reports
@@ -381,6 +401,54 @@ def rules_simulate(
     return simulate_rules(db, user, candidate_rules.model_dump())
 
 
+@router.post("/rules/conflicts", response_model=RuleConflictAnalysisResult)
+def rules_conflicts(
+    body: RuleConflictAnalysisRequest, db=Depends(get_db), user=Depends(get_current_user)
+):
+    """Read-only, advisory: explains where two or more rules -- the
+    account's currently saved ones, or a not-yet-saved candidate set (same
+    shape PUT /api/rules accepts, same "server loads them unless a
+    candidate is supplied" pattern as POST /api/rules/simulate) -- can
+    match the same file, and what the real classifier (rules/classifier.py)
+    actually does about it. Never saves anything, never organizes, never
+    touches the filesystem -- see services/rule_conflict_service.py, which
+    derives every claim from classify_file_explained()'s real evaluation
+    order, never a second, invented precedence system."""
+    watch_root = Path(user["watch_folder"])
+    if body.rules is not None:
+        rules_dict = body.rules.model_dump()
+    else:
+        engine = get_rule_engine(db, user["id"], watch_root)
+        rules_dict = engine.rules
+    return analyze_conflicts(rules_dict, watch_root)
+
+
+# Each AI call has a real provider cost -- same per-IP fixed-window
+# mechanism as every other limiter in this app (api/rate_limit.py).
+ai_rule_limiter = RateLimiter(
+    max_requests=settings.AI_RULE_GENERATE_RATE_LIMIT_MAX,
+    window_seconds=settings.AI_RULE_GENERATE_RATE_LIMIT_WINDOW_SECONDS,
+)
+
+
+@router.post(
+    "/rules/ai-generate",
+    response_model=AIRuleGenerateResponse,
+    dependencies=[Depends(rate_limited(ai_rule_limiter))],
+)
+def ai_generate_rule(body: AIRuleGenerateRequest, user=Depends(get_current_user)):
+    """Advisory only: interprets a natural-language request into a
+    structured rule PROPOSAL, validated through the exact same per-type
+    schemas (KeywordRule/RegexRule/DateRule) and destination-containment
+    check (is_within_watch_folder) a manually-created rule is subject to
+    -- see services/ai_rule_service.py. Never saves anything (no `db`
+    dependency at all -- this route can't write even by accident) and never
+    touches the filesystem or triggers organization; saving still only ever
+    happens via the existing PUT /api/rules, once the user explicitly
+    reviews and confirms the proposal."""
+    return generate_rule_proposal(body.prompt, Path(user["watch_folder"]))
+
+
 @router.post("/logs/{log_id}/reclassify", response_model=ReclassifyResult)
 def reclassify(
     log_id: int,
@@ -434,6 +502,134 @@ def organize_existing(db=Depends(get_db), user=Depends(get_current_user)):
         enqueue_agent_command(db, user["id"], "organize_existing", {"source": "manual"})
         return OrganizeExistingResult(queued=True)
     return organize_existing_files(db, user)
+
+
+@router.post("/organize/preview", response_model=OrganizePreviewResult)
+def preview_organize_existing(db=Depends(get_db), user=Depends(get_current_user)):
+    """Read-only dry run of the route above -- discovers and classifies
+    the exact same candidate files, without moving/creating/deleting
+    anything. Confirming (the browser then calling POST /organize-existing
+    itself, unchanged) never consumes this response as input -- it always
+    re-scans and re-plans fresh against whatever the filesystem actually
+    looks like at that moment, so a preview that's gone stale (a file
+    deleted, renamed, or newly duplicated since) can never cause the wrong
+    thing to be organized; it can only mean the confirmed result differs
+    slightly from what was shown, which the UI discloses rather than
+    silently hiding."""
+    if is_agent_connected(user):
+        command = enqueue_agent_command(db, user["id"], "preview_organize_existing", {})
+        return OrganizePreviewResult(queued=True, command_id=command["id"])
+    items = plan_organize_existing(db, user)
+    return OrganizePreviewResult(
+        queued=False,
+        total=len(items),
+        ready=sum(1 for i in items if i["status"] == "ready"),
+        duplicates=sum(1 for i in items if i["status"] == "duplicate"),
+        no_match=sum(1 for i in items if i["status"] == "no_match"),
+        errors=sum(1 for i in items if i["status"] == "error"),
+        items=items,
+    )
+
+
+# Each AI call has a real provider cost -- same per-IP fixed-window
+# mechanism as every other limiter in this app (api/rate_limit.py).
+ai_unclassified_limiter = RateLimiter(
+    max_requests=settings.AI_UNCLASSIFIED_RATE_LIMIT_MAX,
+    window_seconds=settings.AI_UNCLASSIFIED_RATE_LIMIT_WINDOW_SECONDS,
+)
+
+
+@router.post(
+    "/unclassified/suggestions",
+    response_model=UnclassifiedSuggestionResult,
+    dependencies=[Depends(rate_limited(ai_unclassified_limiter))],
+)
+def unclassified_suggestions(
+    body: UnclassifiedSuggestionRequest, db=Depends(get_db), user=Depends(get_current_user)
+):
+    """Advisory only: for files the real classifier reports as no-match
+    (never a second, independent definition of "unclassified" -- see
+    services/ai_unclassified_service.py), asks the AI what they might be and
+    where they could belong. Never saves a rule, never moves/renames/
+    deletes a file, and never writes an activity_log row -- a
+    `suggested_rule` only becomes real through the existing PUT /api/rules,
+    once the user explicitly reviews and saves it, exactly like an AI Rule
+    Generator proposal.
+
+    Agent-connected accounts reuse Organization Preview's existing
+    "preview_organize_existing" command for discovery (no new agent command
+    type): body.command_id is omitted on the first call (queues that
+    command and returns its id) and supplied on a second call once the
+    browser has polled GET /api/agent-commands for its completion, same
+    pattern as Organization Preview itself."""
+    result = generate_unclassified_suggestions(db, user, body.command_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Unknown command.")
+    return result
+
+
+@router.post("/duplicates/analyze", response_model=DuplicateAnalysisResult)
+def duplicates_analyze(
+    body: DuplicateAnalysisRequest, db=Depends(get_db), user=Depends(get_current_user)
+):
+    """Read-only: finds files with IDENTICAL SHA-256 content across the
+    account's own watch folders and groups them -- never deletes, moves,
+    renames, or replaces a file, and never decides which copy the user
+    should keep (see services/duplicate_service.py). Agent-connected
+    accounts reuse the existing generic agent command mechanism (a new
+    "duplicate_analysis" command type, polled the same way Organization
+    Preview/AI Unclassified Suggestions already are) rather than the
+    backend ever touching the agent's filesystem itself."""
+    result = analyze_duplicates(db, user, body.command_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Unknown command.")
+    return result
+
+
+# Each AI call has a real provider cost -- same per-IP fixed-window
+# mechanism as every other AI-backed limiter in this app (api/rate_limit.py).
+ai_file_search_limiter = RateLimiter(
+    max_requests=settings.AI_FILE_SEARCH_RATE_LIMIT_MAX,
+    window_seconds=settings.AI_FILE_SEARCH_RATE_LIMIT_WINDOW_SECONDS,
+)
+
+
+@router.post(
+    "/files/search",
+    response_model=FileSearchResponse,
+    dependencies=[Depends(rate_limited(ai_file_search_limiter))],
+)
+def files_search(body: FileSearchRequest, db=Depends(get_db), user=Depends(get_current_user)):
+    """Natural-language file search: the AI ONLY turns body.query into a
+    structured, validated SearchQuery (models/schemas.py) -- it never sees
+    a filename, path, or any file metadata, and its output is never
+    treated as search results. The deterministic search engine
+    (automation/file_ops.py::search_files_by_query(), shared with the agent)
+    is the only thing that decides which files actually match; see
+    services/file_search_service.py. Read-only throughout: never moves/
+    renames/deletes a file, never modifies rules, never writes activity_log.
+    Agent-connected accounts reuse the existing generic agent command
+    mechanism (a new "file_search" command type carrying the already-
+    validated SearchQuery, never the raw natural-language text or an AI
+    provider) rather than the backend ever touching the agent's filesystem
+    itself."""
+    result = run_file_search(db, user, body.query, body.command_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Unknown command.")
+    return result
+
+
+@router.get("/health/organization", response_model=OrganizationHealthResponse)
+def health_organization(db=Depends(get_db), user=Depends(get_current_user)):
+    """A single, read-only AGGREGATION over FileFlow's existing
+    capabilities -- classification coverage, duplicate groups, rule
+    conflicts, and recent organization activity -- answering "how healthy
+    is my workspace right now?" (see services/health_service.py). Never
+    reimplements any of those features' own logic, never modifies a file,
+    rule, or activity record, and never calls an AI provider. Distinct from
+    the unauthenticated GET /api/health liveness check (main.py) -- this
+    one requires a session and is account-scoped."""
+    return get_organization_health(db, user)
 
 
 @router.get("/simulate-download")

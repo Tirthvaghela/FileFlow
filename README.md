@@ -6,6 +6,7 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi)
 ![UiPath](https://img.shields.io/badge/UiPath-RPA-orange)
 ![MongoDB](https://img.shields.io/badge/MongoDB-Database-47A248?logo=mongodb)
+![AI](https://img.shields.io/badge/AI-Claude%20%7C%20Gemini%20(advisory%20only)-8A2BE2)
 ![Status](https://img.shields.io/badge/Status-In%20Development-yellow)
 
 ---
@@ -42,8 +43,8 @@ FileFlow automatically performs the following tasks whenever a new file is downl
 
 - Detects new files in real time
 - Identifies the file type
-- Applies user-defined esautomation rules
-- Detects duplicate fil
+- Applies user-defined automation rules
+- Detects duplicate files
 - Automatically renames duplicate files
 - Creates destination folders if required
 - Moves files into appropriate folders (optionally via a real UiPath Robot)
@@ -279,6 +280,32 @@ A downloadable Windows agent (`FileFlowAgentSetup.exe`, from the dashboard's nav
 
 ---
 
+## 🧠 AI Rule Generator
+
+Describe a rule in plain English ("move anything with 'invoice' in the name to Finance") from the Rules page's "Create with AI" button and get back a structured **proposal** — never an automatically-saved rule. The AI only ever produces one of FileFlow's own six supported rule types (keyword, content keyword, regex, extension, file age, large file); every proposal is re-validated through the exact same schema, containment, and ReDoS checks a manually-typed rule goes through before it can be reviewed and explicitly saved. Rate-limited per IP; if no API key is configured, the feature responds with a clean "AI service is not configured" instead of failing.
+
+## 💡 AI Unclassified File Suggestions
+
+For files the real rule engine currently has no rule for, ask AI what they might be and where they could belong. Files are grouped by shared filename pattern first (e.g. `invoice_1.pdf`, `invoice_2.pdf`) so one suggestion — and, if accepted, one created rule — can cover a whole batch. The AI only ever sees safe metadata (filename, extension, size) — never file contents or the real filesystem path — and a suggested rule goes through the same validation as the AI Rule Generator's own proposals before it can be created.
+
+## ⚠ Rule Conflict Detector
+
+Explains where two or more of your own rules can match the same file, and what the real classifier actually does about it — shadowed rules that can never fire, redundant duplicates, and cross-type overlaps are all derived by running a synthetic candidate through the exact same classification function a real file goes through, never a second, invented precedence system. Available both as an on-demand check and automatically before saving a new rule, with the option to save anyway.
+
+## 🧩 Smart Duplicate Groups
+
+Finds files with **identical content** (SHA-256, not just a matching name) across your whole watch folder — including files already sorted into different category folders — and groups them with the potential storage that could be reclaimed. Purely advisory: it explains what's duplicated, it never deletes, moves, or picks a copy to keep for you.
+
+## 🔎 Natural Language File Search
+
+Type a plain-language request ("find PDF invoices from August", "show large files related to college") and get back real, ranked results with a plain-English reason each one matched. The AI's only job is turning that request into a structured, schema-validated query (filename/extension/size/date/location/category/duplicate filters) — it never sees a filename or file content, and a deterministic search engine (shared with the remote agent) is the only thing that decides which files actually match. Metadata only: it never reads file contents, and never performs OCR.
+
+## 📊 Organization Health Dashboard
+
+One glanceable overview of the whole workspace: classification coverage, duplicate groups and potentially-redundant storage, active rules and detected conflicts, and recent organization activity (24h/7d/30d) — every number aggregated from the features above, never a second, independently-computed metric. Links straight into Unclassified Suggestions, Duplicate Groups, and Rules for anything that needs attention; never triggers an AI call, a duplicate scan, or a rule change just by loading.
+
+---
+
 # 🤖 RPA Automation — Current Scope
 
 **The Python/FastAPI backend is a complete, standalone automation system** — Watchdog detects files in real time, FastAPI applies the rule engine (keyword rules, extension rules, duplicate detection, auto-generated folders for unknown types), moves files, and pushes live updates to the dashboard over WebSocket. This is fully working and tested against real folders.
@@ -400,6 +427,12 @@ This project exists to satisfy the course's requirement to demonstrate the RPA p
 - Resend (weekly digest)
 - Plyer (desktop notifications, backend and agent alike)
 
+## AI (advisory features only)
+
+- Anthropic Claude or Google Gemini (either one, configurable — see [AI Rule Generator](#-ai-rule-generator) etc. above) via a single thin HTTP provider abstraction (`backend/services/ai_provider.py`), no SDK dependency
+- Used only to *propose* a rule, *suggest* a classification, or *interpret* a search request into a structured query — never to move a file, decide search results, or execute anything on its own. Every AI output is re-validated by FileFlow's own deterministic code before it can affect anything real
+- Fully optional: with no API key configured, these three features degrade to a clean "not configured" response; every other feature is unaffected
+
 ---
 
 # 📂 Project Structure
@@ -427,7 +460,8 @@ FileFlow/
 │   ├── rules/               (per-account rule engine + classifier)
 │   ├── database/              (MongoDB connection, id counters)
 │   ├── models/                  (Mongo document wrappers)
-│   ├── services/                  (stats, reports, digest, UiPath, agent)
+│   ├── services/                  (stats, reports, digest, UiPath, agent, AI provider + rule/
+│   │                                unclassified/search services, rule conflicts, duplicates, health)
 │   ├── config/                      (settings, .env loading, agent release info)
 │   ├── agent_releases/               (published agent installer .exe files)
 │   ├── tests/                        (pytest, real local MongoDB)
@@ -484,6 +518,8 @@ uvicorn main:app --reload
 ```
 
 The API will be available at `http://localhost:8000`.
+
+*(Optional)* To enable [AI Rule Generator](#-ai-rule-generator), [AI Unclassified Suggestions](#-ai-unclassified-file-suggestions), and [Natural Language File Search](#-natural-language-file-search), set `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` (plus `AI_PROVIDER`) in `backend/.env` — see the comments in `.env.example` for the full list of settings. Leaving both unset is fine; those three features just respond with "AI service is not configured" and every other feature works exactly the same.
 
 ## 3. Frontend setup (React + Vite)
 
@@ -548,7 +584,8 @@ Originally built as a single-tenant SQLite app, FileFlow has since gone through 
 - **Added per-row Undo on the History page** (any operation can now be reversed independently of order, not just the most recent one) and a **category detail page** — clicking a Categories card opens every real file in that folder, sortable by size/date, with a Recycle-Bin-backed delete.
 - **Ran a full backend reliability audit and fixed five real bugs it found**: category statistics (and the Dashboard's "by category" chart) now read live from disk instead of a historical `activity_log` aggregate, so a category correctly disappears once every file in it is gone; the scheduler's jobs were being registered with `next_run_time=None`, which silently added every one of them *paused* — the nightly archive sweep, recycle-bin purge, storage-threshold check, weekly digest, and scheduled-organize sweep were running on no schedule at all until this was found and fixed; account deletion wasn't actually removing the account's own rules document (an `int`/`str` `_id` type mismatch meant the delete query matched nothing); the UiPath fallback path could raise and lose an activity-log entry if a Robot genuinely completed a move but failed to report it cleanly; and the scheduled archive sweep plus the storage-threshold auto-archive were the one remaining file-move path not sharing the lock every other mover (`process_file`, undo, reclassify) already uses, closing a real destination-collision race. Also cleaned up stale WebSocket connections on any disconnect, not just the common case.
 - **Fixed the standalone UiPath `Main.xaml` pack failure** (root cause: the wrong Dictionary value type on all five `InvokeWorkflowFile.Arguments` blocks) and made the standalone demo portable — `DetectFiles.xaml`/`LogActivity.xaml` now take `in_WatchFolder`/`in_ActivityLogPath` as workflow arguments instead of a hardcoded developer-machine path, `Main.xaml` defaults both to project-relative paths, and `uipath/FileFlow/TestDownloads/.gitkeep` keeps the default test folder present after a fresh clone. Verified for real with `uip rpa pack`, `uip rpa analyze`, and `uip rpa run` — including copying the whole project to an unrelated folder and running it there successfully with zero arguments. See [RPA Automation — Current Scope](#-rpa-automation--current-scope).
-- **428 backend tests, 223 agent tests, and 94 frontend tests currently pass** (745 total), verified against real infrastructure (a real MongoDB instance, a real running server, real file drops, a real installed Windows agent, real UiPath execution logs) rather than mocks alone.
+- **Added six advisory/AI capstone features on top of the core engine**: an [AI Rule Generator](#-ai-rule-generator) and [AI Unclassified File Suggestions](#-ai-unclassified-file-suggestions) (both strictly proposal-only — every AI output is re-validated through the same schema a manual rule goes through before it can be saved), a [Rule Conflict Detector](#-rule-conflict-detector) that runs synthetic candidates through the real classifier rather than a second precedence system, [Smart Duplicate Groups](#-smart-duplicate-groups) (SHA-256 content matching, purely advisory), [Natural Language File Search](#-natural-language-file-search) (the AI only ever produces a structured, schema-validated query — a deterministic engine shared with the remote agent decides what actually matches), and an [Organization Health Dashboard](#-organization-health-dashboard) that aggregates all of the above into one overview without introducing a second source of truth for any of them. All six ran through a dedicated final production-readiness/security/regression audit (auth token-type confusion, cross-account isolation, path-containment/ReDoS protection, AI-provider failure mapping, and a missing `(user_id, _id)` index on `agent_commands` were all specifically checked; the audit's only functional fix was that missing index).
+- **1,385 tests currently pass** across backend (819, plus 2 release-artifact checks that only run with `FILEFLOW_VERIFY_RELEASE=1`), remote agent (257; one pre-existing Windows-only test remains a known, documented OS-level timing issue unrelated to FileFlow code — see [Known issues](#known-issues--not-yet-done)), and frontend (309 across 25 files) — verified against real infrastructure (a real MongoDB instance, a real running server, real file drops, a real installed Windows agent, real UiPath execution logs) rather than mocks alone.
 
 ## Known issues / not yet done
 
@@ -559,7 +596,18 @@ Originally built as a single-tenant SQLite app, FileFlow has since gone through 
 - The remote agent watches one folder per install; the multiple-watch-folders feature is currently backend-only.
 - Multiple watch folders share one rule set per account — independent rules per folder would be a larger, separate change.
 - No pagination on Activity Log (capped at 500 rows); no multi-select bulk actions (undo/delete/reclassify still one row/file at a time, though no longer restricted to "most recent only"); no data export beyond the existing CSV/Excel/PDF reports.
-- Frontend dark mode covers the marketing pages only, not the authenticated app; JS bundle isn't code-split (~1.2MB).
+- **No retention policy**: the `activity_log` and `agent_commands` collections only grow (no TTL or cleanup job). Queries are index-backed (including a `(user_id, _id)` index on `agent_commands`), so this affects storage, not correctness or query latency, for a personal/small-group deployment.
+- Frontend dark mode covers the marketing pages only, not the authenticated app. Every route is already lazy-loaded (`React.lazy`/`Suspense` in `App.jsx`) into its own chunk. The production build still prints Vite's "chunks larger than 500 kB" warning for exactly one chunk: the shared entry/vendor bundle (~525 kB — React, React DOM, React Router, axios, needed by every route regardless). The Dashboard chunk (~412 kB) is the next largest, under the threshold, because it statically imports its own dialogs (Organization Preview, Unclassified Suggestions, Duplicate Groups, File Search, Health). Lazy-loading those dialogs individually was evaluated during the production-readiness audit and deliberately not done — it would add real risk to a large, currently 100%-passing test suite for a cosmetic saving on an internal, self-hosted tool.
+- **A known, pre-existing agent test failure**: `agent/tests/test_singleton.py::test_a_crashed_holder_process_also_releases_the_port` fails on this Windows development environment (an abrupt `TerminateProcess` doesn't release the bound localhost port as fast as the test expects). Reproduced identically before and after every feature added since, with no related change to the singleton implementation — attributed to Windows OS-level lock-release timing, not a FileFlow bug. Left as-is (not weakened or skipped) per the project's own testing standards.
+- **AI features (Rule Generator, Unclassified Suggestions, Natural Language Search) use UTC for every date computation** (e.g. "last month", "today"), matching every other timestamp already in FileFlow — there's no per-account timezone setting anywhere in the app yet.
+- **Natural Language File Search is metadata-only** — filename, extension, size, dates, and current classification, exactly like the rest of FileFlow. It never reads file contents and never performs OCR, so a request like "find the file about machine learning" is correctly reported as unsupported rather than guessed at.
+- **The Health Dashboard's classification/unclassified counts cover only each watch folder's top level** (the same scope AI Unclassified Suggestions already uses) — a file already sorted into a category subfolder isn't re-audited. It also has no historical "organization errors" metric: the underlying organizer never persists a per-file failure event, so the dashboard can only show a live count from its current scan, not a 7/30-day trend.
+- For a connected remote agent, the Health Dashboard's file-classification and duplicate-scan cards report "not available yet" rather than executing a new background scan on every page load — open Unclassified Suggestions / Duplicate Files directly to check current numbers on demand.
+- **AI provider verification scope**: all automated tests mock the provider boundary. A final manual smoke test (2026-09-25) exercised all three AI features live against **Google Gemini** (`gemini-3.6-flash`) — a real rule proposal, a real unclassified-file suggestion, and a real natural-language search interpretation each returned valid, schema-checked output and drove the normal FileFlow code paths. The **Anthropic** provider path is implemented and unit-tested but was **not** exercised live (no Anthropic key was available). During that run Gemini intermittently answered `503 UNAVAILABLE` ("high demand"); FileFlow reported it as "AI service is temporarily unavailable" with no destructive side effect, and a retry succeeded — expect the same on a busy provider. **At release freeze the live re-check could not be repeated:** the Gemini free-tier daily request quota for this model was exhausted (`429 RESOURCE_EXHAUSTED`, `GenerateRequestsPerDayPerProjectPerModel-FreeTier`), which FileFlow reported as "AI search is busy right now". The final build's AI code paths were therefore re-run end to end against a local *stub* provider (canned, schema-shaped answers through the real HTTP boundary) — that verifies FileFlow's side, not the model's behaviour, and is not a substitute for a live check.
+- **Agent installer 1.0.4 is built from current source and published** at `backend/agent_releases/FileFlowAgentSetup-1.0.4.exe` (the older `-1.0.3.exe` is left alongside it). It is **unsigned** (`Get-AuthenticodeSignature`: `NotSigned`) — Windows SmartScreen/antivirus may warn. Verified on 2026-09-25: the frozen build contains handlers for all six command types (undo, reclassify, organize_existing, preview_organize_existing, duplicate_analysis, file_search); a real silent install into a scratch folder ran preview, organize-existing, duplicate analysis and file search through the agent, and an unknown command type did not stop the others; the version manifest, both download routes and the SHA-256 all matched. **Not re-tested:** the self-update *apply* cycle (it would install into the real per-user location) and an outage-and-replay of the outbox against the built exe. A build's `VERSION` string does not prove what is inside it — an earlier local build labelled `1.0.4` lacked three of those handlers — so rebuild after any change to `agent/commands.py`, and run `FILEFLOW_VERIFY_RELEASE=1 pytest backend/tests/test_release_artifact.py` before publishing. Uninstalling leaves the agent's own `config.json` (which holds its token) and outbox in the install folder.
+- The authenticated app is **desktop-first**: below roughly 700 px width the sidebar does not collapse and the page scrolls horizontally (the new Health panel itself stacks correctly). Verified in a real headless-browser check; not addressed.
+- **UiPath — what is actually verified (2026-09-25).** The only UiPath-powered step is the *physical file move* (`uipath/FileFlowMove/MoveFile.xaml`, invoked by `backend/services/uipath_service.py` from `organizer.process_file`) when `UIPATH_ENABLED=true`. Classification, rules, preview, duplicate/search/health, and the Windows agent's own moves are Python — the installed agent ships no `.env`, so it never uses UiPath unless `UIPATH_*` variables are set in its process environment, which was not tested. A live run through the production function moved a scratch file with the real Robot (cold start ~12 s, later moves ~4 s), UiPath's own execution log recorded `FileFlowMove execution started/ended`, and the three backend-organized files in the end-to-end flows each triggered one Robot execution. **Config drift:** `UIPATH_ROBOT_EXE` points into a *versioned* folder (`Robot/<version>/UiRobot.exe`); UiPath's auto-updater replaced `26.0.198-cloud.24248` with `26.0.202-cloud.25004`, so the previously configured path silently stopped existing and every move logged `UiPath Robot invocation failed to start` and fell back to the Python move. Re-point it after any UiPath update (safe failure mode: a missing or failed Robot never blocks a move).
+- New accounts start with **real-time monitoring off** (the seed rule template sets `realtime_monitoring_enabled: false`), so the Dashboard shows "Automation engine paused" until it is switched on in Settings; the manual "Organize existing files" sweep works either way.
 
 ---
 
@@ -622,6 +670,7 @@ This project demonstrates:
 - WebSocket Communication
 - Auth Security (rate limiting, session management, two-factor authentication)
 - Desktop Application Packaging & Auto-Update (PyInstaller, Inno Setup)
+- Applied AI Integration with Human-in-the-Loop Safety (structured-output validation, provider abstraction, advisory-only design — the AI proposes, deterministic code decides)
 
 ---
 

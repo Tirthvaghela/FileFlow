@@ -262,6 +262,21 @@ def test_successful_move_queues_exactly_one_correctly_populated_activity(watch_r
     assert payload["client_ref"], "needed for the backend to dedupe a retried delivery"
 
 
+def test_queued_activity_carries_the_explanation_for_the_same_decision(watch_root, outbox_conn):
+    # The agent classifies locally (rules/classifier.py, shared with the
+    # backend) -- the queued report must carry that SAME evaluation's
+    # explanation, not omit it or recompute it differently.
+    source = watch_root / "document.pdf"
+    source.write_text("pdf contents")
+
+    process_download(_RulesClient(), watch_root, outbox_conn, source)
+
+    rows = outbox.due_items(outbox_conn, "activity")
+    payload = json.loads(rows[0]["payload"])
+    assert payload["explanation"]["match_type"] == "category"
+    assert payload["explanation"]["destination"] == payload["category"] == "Documents"
+
+
 # ---------------------------------------------------------------------------
 # Real multi-file-drop concurrency -- AgentDownloadHandler._handle() spawns
 # a brand new daemon thread per filesystem event (confirmed by direct code

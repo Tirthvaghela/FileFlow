@@ -81,7 +81,12 @@ def test_do_organize_existing_moves_loose_files_into_their_category_folders(tmp_
     assert (watch_root / "Images" / "photo.jpg").exists()
     assert not (watch_root / "report.pdf").exists()
     assert not (watch_root / "photo.jpg").exists()
-    assert len(outbox.due_items(conn, "activity")) == 2
+    activities = outbox.due_items(conn, "activity")
+    assert len(activities) == 2
+    for row in activities:
+        payload = json.loads(row["payload"])
+        assert payload["explanation"]["match_type"] == "category"
+        assert payload["explanation"]["destination"] == payload["category"]
 
 
 def test_do_organize_existing_skips_files_already_inside_a_category_subfolder(tmp_path):
@@ -119,13 +124,13 @@ def test_do_organize_existing_reports_overall_success_even_when_every_file_error
     def _raise(*args, **kwargs):
         raise OSError("simulated disk error")
 
-    monkeypatch.setattr(commands, "classify_file", _raise)
+    monkeypatch.setattr(commands, "classify_file_explained", _raise)
 
     result = commands._do_organize_existing(_OrganizeRulesClient(), watch_root, conn)
 
     assert result == {"scanned": 2, "organized": 0, "duplicates": 0, "errors": 2}
-    # Both files are left untouched -- classify_file() raised before either
-    # was ever moved.
+    # Both files are left untouched -- classify_file_explained() raised
+    # before either was ever moved.
     assert (watch_root / "report.pdf").exists()
     assert (watch_root / "photo.jpg").exists()
     assert outbox.due_items(conn, "activity") == []
@@ -924,3 +929,589 @@ def test_retry_pending_files_backs_off_instead_of_permanently_dropping_the_item_
         "the pending file must still be queued for a later retry, not silently dropped"
     )
     assert pending_file.exists(), "the file itself must be untouched"
+
+
+# ---------------------------------------------------------------------------
+# _do_preview_organize_existing() -- the read-only dry run behind the
+# Organization Preview feature's agent-connected path. Same file discovery
+# as _do_organize_existing(), same plan_file_organization() decision
+# (automation/file_ops.py, shared with the backend) -- but must never move,
+# rename, or delete anything, and never touch the outbox.
+# ---------------------------------------------------------------------------
+
+
+def test_preview_returns_the_correct_planned_destination_and_counts(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "report.pdf").write_text("pdf contents")
+    (watch_root / "photo.jpg").write_text("jpg contents")
+
+    result = commands._do_preview_organize_existing(_OrganizeRulesClient(), watch_root)
+
+    assert result["total"] == 2
+    assert result["ready"] == 2
+    by_name = {i["filename"]: i for i in result["items"]}
+    assert by_name["report.pdf"]["category"] == "Documents"
+    assert by_name["report.pdf"]["destination_path"] == str(watch_root / "Documents" / "report.pdf")
+
+
+def test_preview_carries_the_real_classification_explanation(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "photo.jpg").write_text("jpg contents")
+
+    result = commands._do_preview_organize_existing(_OrganizeRulesClient(), watch_root)
+
+    explanation = result["items"][0]["explanation"]
+    assert explanation["match_type"] == "category"
+    assert explanation["destination"] == result["items"][0]["category"] == "Images"
+
+
+def test_preview_never_moves_or_creates_anything(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    source = watch_root / "report.pdf"
+    source.write_text("pdf contents")
+
+    commands._do_preview_organize_existing(_OrganizeRulesClient(), watch_root)
+
+    assert source.exists()
+    assert source.read_text() == "pdf contents"
+    assert not (watch_root / "Documents").exists()
+
+
+def test_preview_does_not_touch_the_outbox(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "report.pdf").write_text("pdf contents")
+    conn = outbox.open_queue(tmp_path / "queue.db")
+
+    commands._do_preview_organize_existing(_OrganizeRulesClient(), watch_root)
+
+    assert outbox.due_items(conn, "activity") == []
+
+
+def test_preview_flags_a_file_with_no_matching_rule_honestly(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "mystery.xyz123").write_text("??")
+    rules = {**_ORGANIZE_RULES, "auto_organize_unknown_extensions": False}
+
+    class _NoAutoOrganizeClient:
+        def get_rules(self):
+            return rules
+
+    result = commands._do_preview_organize_existing(_NoAutoOrganizeClient(), watch_root)
+
+    assert result["no_match"] == 1
+    assert result["items"][0]["status"] == "no_match"
+    assert result["items"][0]["explanation"]["rule_name"] is None
+
+
+def test_preview_flags_a_duplicate(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    dest = watch_root / "Documents"
+    dest.mkdir()
+    (dest / "report.pdf").write_text("same content")
+    (watch_root / "report.pdf").write_text("same content")
+
+    result = commands._do_preview_organize_existing(_OrganizeRulesClient(), watch_root)
+
+    assert result["duplicates"] == 1
+    assert result["ready"] == 0
+    assert result["items"][0]["status"] == "duplicate"
+
+
+def test_preview_one_unreadable_file_does_not_abort_the_rest(tmp_path, monkeypatch):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "good.pdf").write_text("pdf contents")
+    (watch_root / "broken.pdf").write_text("pdf contents")
+
+    real_plan = commands.plan_file_organization
+
+    def _flaky(source_path, *args, **kwargs):
+        if source_path.name == "broken.pdf":
+            raise OSError("simulated unreadable file")
+        return real_plan(source_path, *args, **kwargs)
+
+    monkeypatch.setattr(commands, "plan_file_organization", _flaky)
+
+    result = commands._do_preview_organize_existing(_OrganizeRulesClient(), watch_root)
+
+    by_name = {i["filename"]: i for i in result["items"]}
+    assert by_name["good.pdf"]["status"] == "ready"
+    assert by_name["broken.pdf"]["status"] == "error"
+    assert "simulated unreadable file" not in by_name["broken.pdf"]["error"]
+
+
+def test_handle_dispatches_the_preview_command_type_and_always_reports_success(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "report.pdf").write_text("pdf contents")
+    conn = outbox.open_queue(tmp_path / "queue.db")
+    command = {"id": 1, "type": "preview_organize_existing", "payload": {}}
+
+    commands._handle(client=_OrganizeRulesClient(), watch_root=watch_root, command=command, outbox_conn=conn)
+
+    payload = json.loads(outbox.due_items(conn, "command_complete")[0]["payload"])
+    assert payload["success"] is True
+    assert payload["result"]["total"] == 1
+    assert not (watch_root / "Documents").exists(), "handling a preview command must never move a file"
+
+
+# ---------------------------------------------------------------------------
+# AI Unclassified File Suggestions (backend feature: services/
+# ai_unclassified_service.py) deliberately adds ZERO new agent code -- an
+# agent-connected account's discovery step reuses the exact
+# preview_organize_existing command/_do_preview_organize_existing() above
+# as-is: its own "no_match" bucket already is the "unclassified" signal
+# that feature is built on, and the AI call itself only ever happens on the
+# backend once the agent's plain metadata is back there (this agent process
+# never talks to an AI provider and never sees an AI-generated suggestion).
+# These tests don't exercise any new code -- they lock in, from the
+# feature's own point of view, that the existing mechanism already
+# satisfies what it needs: real local discovery via the shared classifier,
+# zero file mutation, per-file error containment, and no code path capable
+# of executing anything AI-generated.
+# ---------------------------------------------------------------------------
+
+
+def test_unclassified_discovery_finds_a_file_with_no_matching_rule(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "mystery.xyz123").write_text("??")
+    rules = {**_ORGANIZE_RULES, "auto_organize_unknown_extensions": False}
+
+    class _NoAutoOrganizeClient:
+        def get_rules(self):
+            return rules
+
+    result = commands._do_preview_organize_existing(_NoAutoOrganizeClient(), watch_root)
+
+    unclassified = [i for i in result["items"] if i["status"] == "no_match"]
+    assert len(unclassified) == 1
+    assert unclassified[0]["filename"] == "mystery.xyz123"
+
+
+def test_unclassified_discovery_uses_the_real_shared_classifier(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "mystery.xyz123").write_text("??")
+    rules = {**_ORGANIZE_RULES, "auto_organize_unknown_extensions": False}
+
+    class _NoAutoOrganizeClient:
+        def get_rules(self):
+            return rules
+
+    result = commands._do_preview_organize_existing(_NoAutoOrganizeClient(), watch_root)
+
+    explanation = result["items"][0]["explanation"]
+    assert explanation["match_type"] == "default"
+    assert explanation["rule_name"] is None  # honest -- never a fabricated match
+
+
+def test_unclassified_discovery_never_moves_renames_or_deletes(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    source = watch_root / "mystery.xyz123"
+    source.write_text("original content")
+
+    commands._do_preview_organize_existing(_OrganizeRulesClient(), watch_root)
+
+    assert source.exists()
+    assert source.name == "mystery.xyz123"  # never renamed
+    assert source.read_text() == "original content"
+
+
+def test_unclassified_discovery_reports_structured_metadata(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "mystery.xyz123").write_text("some bytes")
+    rules = {**_ORGANIZE_RULES, "auto_organize_unknown_extensions": False}
+
+    class _NoAutoOrganizeClient:
+        def get_rules(self):
+            return rules
+
+    result = commands._do_preview_organize_existing(_NoAutoOrganizeClient(), watch_root)
+
+    item = result["items"][0]
+    assert item["filename"] == "mystery.xyz123"
+    assert item["file_size"] == len("some bytes")
+    assert isinstance(result["total"], int) and isinstance(result["no_match"], int)
+
+
+def test_unclassified_discovery_one_bad_file_does_not_abort_the_batch(tmp_path, monkeypatch):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "good.xyz123").write_text("ok")
+    (watch_root / "broken.xyz123").write_text("ok")
+    rules = {**_ORGANIZE_RULES, "auto_organize_unknown_extensions": False}
+
+    class _NoAutoOrganizeClient:
+        def get_rules(self):
+            return rules
+
+    real_plan = commands.plan_file_organization
+
+    def _flaky(source_path, *args, **kwargs):
+        if source_path.name == "broken.xyz123":
+            raise OSError("simulated unreadable file")
+        return real_plan(source_path, *args, **kwargs)
+
+    monkeypatch.setattr(commands, "plan_file_organization", _flaky)
+
+    result = commands._do_preview_organize_existing(_NoAutoOrganizeClient(), watch_root)
+
+    by_name = {i["filename"]: i for i in result["items"]}
+    assert by_name["good.xyz123"]["status"] == "no_match"
+    assert by_name["broken.xyz123"]["status"] == "error"
+
+
+def test_agent_has_no_code_path_for_an_ai_generated_command_type(tmp_path):
+    # The dispatch table in _handle() is a fixed, finite elif chain -- an
+    # unrecognized command type (e.g. one an AI suggestion might imply,
+    # like "move_file" or "apply_ai_suggestion") is logged and silently
+    # ignored, never executed. This is what actually enforces "the agent
+    # cannot receive or execute arbitrary AI-generated filesystem
+    # operations" -- there is no code path that would do so even if the
+    # backend were compromised into queuing such a command.
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    conn = outbox.open_queue(tmp_path / "queue.db")
+    command = {"id": 1, "type": "apply_ai_suggestion", "payload": {"destination": "C:/anywhere"}}
+
+    commands._handle(client=_OrganizeRulesClient(), watch_root=watch_root, command=command, outbox_conn=conn)
+
+    assert outbox.due_items(conn, "command_complete") == []
+    assert list(watch_root.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# Smart Duplicate Groups (backend feature: services/duplicate_service.py) --
+# _do_duplicate_analysis() below is genuinely new agent code (unlike AI
+# Unclassified Suggestions above, no existing command's shape/scope fits: it
+# needs a recursive, whole-tree scan, not organize_existing's shallow
+# top-level-only one), but it's a thin wrapper -- the actual discovery/
+# hashing/grouping logic lives in automation.file_ops.
+# build_duplicate_groups_result(), the exact same function the backend's own
+# local-mode path calls, so the two can never disagree about what counts as
+# a duplicate.
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_analysis_finds_two_identical_files(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "invoice.pdf").write_bytes(b"identical content")
+    (watch_root / "invoice_copy.pdf").write_bytes(b"identical content")
+
+    result = commands._do_duplicate_analysis(watch_root)
+
+    assert result["duplicate_groups"] == 1
+    assert result["groups"][0]["file_count"] == 2
+
+
+def test_duplicate_analysis_hashes_locally_using_the_shared_primitive(tmp_path, monkeypatch):
+    import hashlib
+
+    from automation import file_ops as file_ops_module
+
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    content = b"hash me"
+    (watch_root / "a.bin").write_bytes(content)
+    (watch_root / "b.bin").write_bytes(content)
+
+    calls = []
+    real_hash = file_ops_module.compute_hash
+
+    def counting_hash(path, chunk_size=65536):
+        calls.append(path)
+        return real_hash(path, chunk_size)
+
+    # build_duplicate_groups_result() calls compute_hash() as an unqualified
+    # name resolved from automation.file_ops's own module globals -- patch
+    # it there, not on the `commands` module's separate `from ... import`
+    # binding, to actually intercept the real call.
+    monkeypatch.setattr(file_ops_module, "compute_hash", counting_hash)
+
+    result = commands._do_duplicate_analysis(watch_root)
+
+    assert len(calls) == 2  # both files actually hashed locally, not assumed
+    assert result["groups"][0]["files"][0]["sha256"] == hashlib.sha256(content).hexdigest()
+
+
+def test_duplicate_analysis_returns_structured_groups(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "a.bin").write_bytes(b"content")
+    (watch_root / "b.bin").write_bytes(b"content")
+
+    result = commands._do_duplicate_analysis(watch_root)
+
+    group = result["groups"][0]
+    assert group["duplicate_type"] == "exact_content_duplicate"
+    assert {"filename", "relative_path", "size_bytes", "modified_at", "sha256"} <= set(
+        group["files"][0].keys()
+    )
+
+
+def test_duplicate_analysis_never_moves_files(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    a = watch_root / "a.bin"
+    b = watch_root / "b.bin"
+    a.write_bytes(b"content")
+    b.write_bytes(b"content")
+
+    commands._do_duplicate_analysis(watch_root)
+
+    assert a.exists() and b.exists()
+
+
+def test_duplicate_analysis_never_renames_files(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    source = watch_root / "a.bin"
+    source.write_bytes(b"content")
+    (watch_root / "b.bin").write_bytes(b"content")
+
+    commands._do_duplicate_analysis(watch_root)
+
+    assert source.exists()
+    assert source.name == "a.bin"
+
+
+def test_duplicate_analysis_never_deletes_files(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    a = watch_root / "a.bin"
+    b = watch_root / "b.bin"
+    a.write_bytes(b"content")
+    b.write_bytes(b"content")
+
+    commands._do_duplicate_analysis(watch_root)
+
+    assert {p.name for p in watch_root.iterdir()} == {"a.bin", "b.bin"}
+
+
+def test_duplicate_analysis_one_inaccessible_file_does_not_abort_the_scan(tmp_path, monkeypatch):
+    from automation import file_ops as file_ops_module
+
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    content = b"same size content"
+    (watch_root / "good_a.bin").write_bytes(content)
+    (watch_root / "good_b.bin").write_bytes(content)
+    broken = watch_root / "broken.bin"
+    broken.write_bytes(content)
+
+    real_hash = file_ops_module.compute_hash
+
+    def flaky_hash(path, chunk_size=65536):
+        if path == broken:
+            raise OSError("permission denied")
+        return real_hash(path, chunk_size)
+
+    monkeypatch.setattr(file_ops_module, "compute_hash", flaky_hash)
+
+    result = commands._do_duplicate_analysis(watch_root)
+
+    assert result["duplicate_groups"] == 1
+    assert result["files_with_errors"] == 1
+
+
+def test_handle_dispatches_the_duplicate_analysis_command_type(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "a.bin").write_bytes(b"content")
+    (watch_root / "b.bin").write_bytes(b"content")
+    conn = outbox.open_queue(tmp_path / "queue.db")
+    command = {"id": 1, "type": "duplicate_analysis", "payload": {}}
+
+    commands._handle(client=_OrganizeRulesClient(), watch_root=watch_root, command=command, outbox_conn=conn)
+
+    payload = json.loads(outbox.due_items(conn, "command_complete")[0]["payload"])
+    assert payload["success"] is True
+    assert payload["result"]["duplicate_groups"] == 1
+    assert {p.name for p in watch_root.iterdir()} == {"a.bin", "b.bin"}
+
+
+def test_existing_organize_existing_command_is_unchanged_by_the_new_command_type(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "report.pdf").write_text("pdf contents")
+    conn = outbox.open_queue(tmp_path / "queue.db")
+    command = {"id": 1, "type": "organize_existing", "payload": {}}
+
+    commands._handle(client=_OrganizeRulesClient(), watch_root=watch_root, command=command, outbox_conn=conn)
+
+    payload = json.loads(outbox.due_items(conn, "command_complete")[0]["payload"])
+    assert payload["success"] is True
+    assert payload["result"]["organized"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Natural Language File Search (backend feature: services/
+# file_search_service.py) -- _do_file_search() below receives ONLY the
+# backend's already-interpreted, already-validated SearchQuery dict (never
+# natural-language text, never an AI provider call/API key) and runs it
+# through the exact same shared deterministic engine (automation.file_ops.
+# search_files_by_query) the backend's own local-mode path uses.
+# ---------------------------------------------------------------------------
+
+
+def test_file_search_finds_a_matching_file(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "invoice.pdf").write_text("content")
+    (watch_root / "resume.pdf").write_text("content")
+
+    result = commands._do_file_search(_OrganizeRulesClient(), watch_root, {"filename_contains": ["invoice"]})
+
+    assert [r["filename"] for r in result["results"]] == ["invoice.pdf"]
+
+
+def test_file_search_searches_only_its_configured_watch_root(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (watch_root / "inside.txt").write_text("content")
+    (outside / "outside.txt").write_text("content")
+
+    result = commands._do_file_search(_OrganizeRulesClient(), watch_root, {})
+
+    assert [r["filename"] for r in result["results"]] == ["inside.txt"]
+
+
+def test_file_search_never_receives_or_needs_an_ai_call(tmp_path, monkeypatch):
+    # No AI provider import exists anywhere the agent can reach -- this
+    # proves the search runs correctly from a plain structured dict alone,
+    # with no natural-language interpretation step in this process at all.
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "invoice.pdf").write_text("content")
+
+    result = commands._do_file_search(
+        _OrganizeRulesClient(), watch_root, {"filename_contains": ["invoice"], "extension": [".pdf"]}
+    )
+
+    assert result["total_matches"] == 1
+    assert "ai_provider" not in dir(commands)
+
+
+def test_file_search_filters_correctly(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "small.bin").write_bytes(b"x" * 10)
+    (watch_root / "large.bin").write_bytes(b"x" * (11 * 1024 * 1024))
+
+    result = commands._do_file_search(_OrganizeRulesClient(), watch_root, {"size_min_mb": 10})
+
+    assert [r["filename"] for r in result["results"]] == ["large.bin"]
+
+
+def test_file_search_sorts_correctly(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "b.bin").write_bytes(b"x" * 1000)
+    (watch_root / "a.bin").write_bytes(b"x" * 10)
+
+    result = commands._do_file_search(
+        _OrganizeRulesClient(), watch_root, {"sort_by": "size_bytes", "sort_order": "desc"}
+    )
+
+    assert [r["filename"] for r in result["results"]] == ["b.bin", "a.bin"]
+
+
+def test_file_search_respects_the_result_limit(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    for i in range(5):
+        (watch_root / f"file{i}.txt").write_text("content")
+
+    result = commands._do_file_search(_OrganizeRulesClient(), watch_root, {"limit": 2})
+
+    assert result["returned"] == 2
+    assert result["total_matches"] == 5
+    assert result["truncated"] is True
+
+
+def test_file_search_excludes_ignored_files(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "a.crdownload").write_text("partial")
+
+    result = commands._do_file_search(_OrganizeRulesClient(), watch_root, {})
+
+    assert result["total_files_scanned"] == 0
+
+
+def test_file_search_never_modifies_any_file(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    target = watch_root / "invoice.pdf"
+    target.write_text("original content")
+
+    commands._do_file_search(_OrganizeRulesClient(), watch_root, {"filename_contains": ["invoice"]})
+
+    assert target.exists()
+    assert target.read_text() == "original content"
+
+
+def test_file_search_one_inaccessible_file_does_not_abort_the_search(tmp_path, monkeypatch):
+    from automation import file_ops as file_ops_module
+
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    good = watch_root / "good.txt"
+    good.write_text("content")
+    broken = watch_root / "broken.txt"
+    broken.write_text("content")
+
+    def vanishing_discover(root):
+        broken.unlink()
+        return [good, broken]
+
+    monkeypatch.setattr(file_ops_module, "discover_all_files", vanishing_discover)
+
+    result = commands._do_file_search(_OrganizeRulesClient(), watch_root, {})
+
+    assert result["files_with_errors"] == 1
+    assert [r["filename"] for r in result["results"]] == ["good.txt"]
+
+
+def test_unknown_search_field_cannot_execute_a_filesystem_operation(tmp_path):
+    # A malformed/malicious-looking field in the query dict (already
+    # supposed to be validated backend-side) is simply ignored by
+    # search_files_by_query's dict.get() lookups -- it can never become a
+    # real filesystem operation, even if this handler somehow received one.
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "a.txt").write_text("content")
+
+    result = commands._do_file_search(
+        _OrganizeRulesClient(), watch_root, {"shell": "rm -rf /", "path": "C:/Users/OtherUser"}
+    )
+
+    assert result["total_matches"] == 1  # unaffected -- unknown keys are inert
+    assert (watch_root / "a.txt").exists()
+
+
+def test_handle_dispatches_the_file_search_command_type(tmp_path):
+    watch_root = tmp_path / "watch"
+    watch_root.mkdir()
+    (watch_root / "invoice.pdf").write_text("content")
+    conn = outbox.open_queue(tmp_path / "queue.db")
+    command = {"id": 1, "type": "file_search", "payload": {"query": {"filename_contains": ["invoice"]}}}
+
+    commands._handle(client=_OrganizeRulesClient(), watch_root=watch_root, command=command, outbox_conn=conn)
+
+    payload = json.loads(outbox.due_items(conn, "command_complete")[0]["payload"])
+    assert payload["success"] is True
+    assert payload["result"]["total_matches"] == 1
+    assert (watch_root / "invoice.pdf").exists()

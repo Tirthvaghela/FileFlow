@@ -126,6 +126,75 @@ class Settings:
         os.getenv("PASSWORD_RESET_TOKEN_EXPIRY_MINUTES", "30")
     )
 
+    # AI Rule Generator (services/ai_provider.py, services/ai_rule_service.py):
+    # turns a natural-language request into a structured rule PROPOSAL only --
+    # never saves a rule or touches a file itself. AI_PROVIDER selects which
+    # of the two request/response shapes services/ai_provider.py builds --
+    # "anthropic" (default) or "gemini"; adding a third provider means adding
+    # another entry to that module's _PROVIDERS dict, not branching further
+    # here. Whichever provider's own API key env var is unset simply makes
+    # every request fail with a clean "AI service is not configured"
+    # response rather than raising.
+    AI_PROVIDER: str = (os.getenv("AI_PROVIDER") or "anthropic").strip().lower()
+    ANTHROPIC_API_KEY: str | None = os.getenv("ANTHROPIC_API_KEY") or None
+    GEMINI_API_KEY: str | None = os.getenv("GEMINI_API_KEY") or None
+    # Resolved once here so services/ai_provider.py never has to know which
+    # env var backs whichever provider is actually selected.
+    AI_PROVIDER_API_KEY: str | None = GEMINI_API_KEY if AI_PROVIDER == "gemini" else ANTHROPIC_API_KEY
+    AI_PROVIDER_MODEL: str = os.getenv(
+        "AI_PROVIDER_MODEL",
+        "gemini-3.6-flash" if AI_PROVIDER == "gemini" else "claude-haiku-4-5-20251001",
+    )
+    AI_PROVIDER_BASE_URL: str = os.getenv(
+        "AI_PROVIDER_BASE_URL", "https://api.anthropic.com/v1/messages"
+    )
+    GEMINI_API_BASE_URL: str = os.getenv(
+        "GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/models"
+    )
+    AI_PROVIDER_TIMEOUT_SECONDS: float = float(os.getenv("AI_PROVIDER_TIMEOUT_SECONDS", "20"))
+
+    # Abuse protection on /api/rules/ai-generate, per caller IP -- same
+    # fixed-window mechanism and per-IP keying as every other limiter here
+    # (see api/rate_limit.py), since each AI call has a real provider cost.
+    AI_RULE_GENERATE_RATE_LIMIT_MAX: int = int(os.getenv("AI_RULE_GENERATE_RATE_LIMIT_MAX", "20"))
+    AI_RULE_GENERATE_RATE_LIMIT_WINDOW_SECONDS: float = float(
+        os.getenv("AI_RULE_GENERATE_RATE_LIMIT_WINDOW_SECONDS", "3600")
+    )
+
+    # AI Unclassified File Suggestions (services/ai_unclassified_service.py):
+    # at most this many distinct file-name groups go into a single AI
+    # request -- a hard, configurable ceiling rather than an unbounded
+    # prompt, matching FileFlow's existing small/bounded batch sizes
+    # (Organization Preview never paginates either, for the same reason).
+    AI_UNCLASSIFIED_MAX_BATCH_SIZE: int = int(os.getenv("AI_UNCLASSIFIED_MAX_BATCH_SIZE", "15"))
+    AI_UNCLASSIFIED_RATE_LIMIT_MAX: int = int(os.getenv("AI_UNCLASSIFIED_RATE_LIMIT_MAX", "20"))
+    AI_UNCLASSIFIED_RATE_LIMIT_WINDOW_SECONDS: float = float(
+        os.getenv("AI_UNCLASSIFIED_RATE_LIMIT_WINDOW_SECONDS", "3600")
+    )
+
+    # Smart Duplicate Groups (automation/file_ops.py::build_duplicate_groups_result,
+    # services/duplicate_service.py): a purely deterministic SHA-256 content
+    # scan, no AI/rate limiting involved -- this cap only bounds how many
+    # duplicate-group *details* one response returns (summary counts always
+    # reflect the full scan regardless); `truncated` discloses when it was hit.
+    DUPLICATE_ANALYSIS_MAX_GROUPS_RETURNED: int = int(
+        os.getenv("DUPLICATE_ANALYSIS_MAX_GROUPS_RETURNED", "50")
+    )
+
+    # Natural Language File Search (services/file_search_service.py,
+    # automation/file_ops.py::search_files_by_query): a hard ceiling on how
+    # many results a single search response returns -- SearchQuery.limit
+    # (models/schemas.py) is separately capped at 100 per-request, but this
+    # is the server-side backstop regardless of what a client asks for.
+    FILE_SEARCH_MAX_RESULT_LIMIT: int = int(os.getenv("FILE_SEARCH_MAX_RESULT_LIMIT", "100"))
+    # Same per-IP fixed-window abuse protection as every other AI-backed
+    # endpoint (api/rate_limit.py) -- each search's AI interpretation step
+    # has a real provider cost.
+    AI_FILE_SEARCH_RATE_LIMIT_MAX: int = int(os.getenv("AI_FILE_SEARCH_RATE_LIMIT_MAX", "20"))
+    AI_FILE_SEARCH_RATE_LIMIT_WINDOW_SECONDS: float = float(
+        os.getenv("AI_FILE_SEARCH_RATE_LIMIT_WINDOW_SECONDS", "3600")
+    )
+
 
 settings = Settings()
 

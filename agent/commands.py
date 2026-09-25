@@ -12,13 +12,16 @@ from pathlib import Path
 import requests
 
 from automation.file_ops import (
+    build_duplicate_groups_result,
     build_final_name,
     compute_hash,
     is_ignored,
+    plan_file_organization,
     resolve_destination,
+    search_files_by_query,
     wait_for_stable_file,
 )
-from rules.classifier import classify_file
+from rules.classifier import classify_file_explained
 from services.notification_service import notify
 from services.uipath_service import execute_move_via_uipath
 
@@ -29,6 +32,17 @@ logger = logging.getLogger("fileflow.agent.commands")
 
 POLL_INTERVAL_SECONDS = 5
 MAX_POLL_BACKOFF_SECONDS = 60
+# Local default matching the backend's own DUPLICATE_ANALYSIS_MAX_GROUPS_
+# RETURNED default (config/settings.py) -- the agent has no access to that
+# setting (it isn't bundled with backend config), so this is a plain,
+# independently-set constant, not a shared value. Only bounds how many
+# duplicate-group *details* one command result carries; see
+# automation.file_ops.build_duplicate_groups_result.
+MAX_DUPLICATE_GROUPS_RETURNED = 50
+# Local default matching the backend's own FILE_SEARCH_MAX_RESULT_LIMIT
+# (config/settings.py) -- the agent has no access to that setting, so this
+# is a plain, independently-set constant, not a shared value.
+MAX_FILE_SEARCH_RESULTS = 100
 # Update checks are deliberately much less frequent than the command poll
 # -- there's no urgency (this isn't a security patch delivery mechanism)
 # and hitting the backend for a version check every 5 seconds forever
@@ -102,7 +116,10 @@ def _do_organize_existing(client, watch_root: Path, outbox_conn) -> dict:
                 continue
             rules = rules_cache.get_rules(client)
             file_size = path.stat().st_size
-            category = classify_file(rules, path.name, file_size, watch_root, file_path=path)
+            explanation = classify_file_explained(
+                rules, path.name, file_size, watch_root, file_path=path
+            )
+            category = explanation["destination"]
             dest_folder = watch_root / category
             dest_folder.mkdir(parents=True, exist_ok=True)
 
@@ -124,6 +141,7 @@ def _do_organize_existing(client, watch_root: Path, outbox_conn) -> dict:
                         file_size=file_size,
                         file_hash=file_hash,
                         client_ref=str(uuid.uuid4()),
+                        explanation=explanation,
                     )
                     continue
 
@@ -150,6 +168,7 @@ def _do_organize_existing(client, watch_root: Path, outbox_conn) -> dict:
                 file_size=file_size,
                 file_hash=file_hash,
                 client_ref=str(uuid.uuid4()),
+                explanation=explanation,
             )
             organized += 1
         except Exception:
@@ -157,6 +176,76 @@ def _do_organize_existing(client, watch_root: Path, outbox_conn) -> dict:
             errors += 1
 
     return {"scanned": scanned, "organized": organized, "duplicates": duplicates, "errors": errors}
+
+
+def _do_preview_organize_existing(client, watch_root: Path) -> dict:
+    """Read-only dry run of _do_organize_existing() above -- same file
+    discovery (iterdir/is_file/is_ignored), same plan_file_organization()
+    decision (automation/file_ops.py) every real organize path already
+    uses, but never moves/creates/renames/deletes anything and never
+    touches the outbox. One file's plan failing never aborts the rest,
+    matching _do_organize_existing()'s own per-file error containment."""
+    rules = rules_cache.get_rules(client)
+    items = []
+    for path in [p for p in watch_root.iterdir() if p.is_file()]:
+        if is_ignored(path):
+            continue
+        try:
+            plan = plan_file_organization(path, watch_root, rules)
+        except OSError:
+            logger.exception("Failed to plan organization for %s", path)
+            items.append(
+                {
+                    "filename": path.name,
+                    "source_path": str(path),
+                    "destination_path": None,
+                    "category": None,
+                    "action": "error",
+                    "status": "error",
+                    "explanation": None,
+                    "error": "Couldn't preview this file -- it may be locked or unreadable.",
+                }
+            )
+            continue
+        if plan["action"] == "duplicate_skipped":
+            status = "duplicate"
+        elif plan["explanation"]["match_type"] == "default":
+            status = "no_match"
+        else:
+            status = "ready"
+        items.append({**plan, "status": status, "error": None})
+
+    return {
+        "total": len(items),
+        "ready": sum(1 for i in items if i["status"] == "ready"),
+        "duplicates": sum(1 for i in items if i["status"] == "duplicate"),
+        "no_match": sum(1 for i in items if i["status"] == "no_match"),
+        "errors": sum(1 for i in items if i["status"] == "error"),
+        "items": items,
+    }
+
+
+def _do_duplicate_analysis(watch_root: Path) -> dict:
+    """Read-only: finds files with identical SHA-256 content anywhere
+    under this machine's watch folder, using the exact same shared
+    discovery/hashing/grouping logic (automation.file_ops.
+    build_duplicate_groups_result) the backend's own local-mode path uses
+    -- so the two can never disagree about what counts as a duplicate.
+    Never moves, renames, or deletes anything, and never reports a
+    duplicate from anything but a genuine SHA-256 match."""
+    return build_duplicate_groups_result([watch_root], MAX_DUPLICATE_GROUPS_RETURNED)
+
+
+def _do_file_search(client, watch_root: Path, query: dict) -> dict:
+    """Read-only: runs a search this account's backend already interpreted
+    and validated (models.schemas.SearchQuery) against THIS machine's
+    watch folder only, using the exact same shared deterministic engine
+    (automation.file_ops.search_files_by_query) the backend's own
+    local-mode path uses -- so the two can never disagree about which
+    files match. Receives ONLY the already-structured query dict -- never
+    natural-language text, never an AI provider call, never an API key."""
+    rules = rules_cache.get_rules(client)
+    return search_files_by_query([watch_root], rules, query, MAX_FILE_SEARCH_RESULTS)
 
 
 def _handle(client, watch_root: Path, command: dict, outbox_conn) -> None:
@@ -192,6 +281,26 @@ def _handle(client, watch_root: Path, command: dict, outbox_conn) -> None:
             # except could ever increment errors), so a duplicate-only or
             # empty batch still reports success=True.
             success, error = result["errors"] == 0, None
+        elif command_type == "preview_organize_existing":
+            # Read-only -- always "succeeds" as a command regardless of
+            # what it finds (a file with no matching rule, or one that
+            # couldn't be planned, is informational, not a command
+            # failure), matching organize_existing's own success contract.
+            result = _do_preview_organize_existing(client, watch_root)
+            success, error = True, None
+        elif command_type == "duplicate_analysis":
+            # Read-only, same success contract as preview_organize_existing
+            # above -- finding zero (or many) duplicate groups is a valid
+            # result, never a command failure.
+            result = _do_duplicate_analysis(watch_root)
+            success, error = True, None
+        elif command_type == "file_search":
+            # Read-only, same success contract -- zero matches is still a
+            # valid, successful search. payload["query"] is the backend's
+            # already-validated SearchQuery; nothing here reinterprets
+            # natural language or calls an AI provider.
+            result = _do_file_search(client, watch_root, payload.get("query") or {})
+            success, error = True, None
         else:
             logger.warning("Unknown command type: %s", command_type)
             return

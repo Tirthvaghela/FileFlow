@@ -282,3 +282,210 @@ def test_rule_simulation_never_reclassifies_another_accounts_history(two_clients
     # Bob's own history is empty -- simulating against his own candidate
     # rules must compare zero of Alice's rows, not silently include them.
     assert resp.json()["compared_count"] == 0
+
+
+def test_organize_preview_never_includes_another_accounts_files(two_clients):
+    alice, bob = two_clients
+
+    (alice.watch_folder / "alice_invoice.pdf").write_text("hi")
+    (bob.watch_folder / "bob_report.pdf").write_text("hi")
+
+    bob_preview = bob.post("/api/organize/preview").json()
+
+    filenames = {item["filename"] for item in bob_preview["items"]}
+    assert filenames == {"bob_report.pdf"}
+    assert "alice_invoice.pdf" not in filenames
+
+
+def test_unclassified_suggestions_never_includes_another_accounts_files(two_clients, monkeypatch):
+    from services import ai_unclassified_service
+
+    alice, bob = two_clients
+    # No extension -- guaranteed to fall through to real match_type
+    # "default" regardless of either account's actual rule set (an unknown
+    # *extension* can still be auto-organized by default; an empty one
+    # never matches any extension/category rule at all).
+    (alice.watch_folder / "alice_mystery").write_text("hi")
+    (bob.watch_folder / "bob_mystery").write_text("hi")
+    monkeypatch.setattr(
+        ai_unclassified_service,
+        "generate_suggestion_completion",
+        lambda prompt: [{"group_index": 0, "status": "unsupported", "message": "no"}],
+    )
+
+    bob_result = bob.post("/api/unclassified/suggestions", json={}).json()
+
+    filenames = {name for s in bob_result["suggestions"] for name in s["file_names"]}
+    assert filenames == {"bob_mystery"}
+    assert "alice_mystery" not in filenames
+
+
+def test_cannot_fetch_suggestions_for_another_accounts_agent_command(two_clients):
+    alice, bob = two_clients
+
+    def _connect(client):
+        token = client.post("/api/auth/agent-token", json={"scope": "full"}).json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        client.get("/api/agent/rules", headers=headers)  # heartbeat
+
+    # Both accounts need an agent connected -- Bob's own request only even
+    # looks at a command_id once *his* account is agent-connected (an
+    # unconnected account always scans locally and ignores it entirely).
+    _connect(alice)
+    _connect(bob)
+    alice_queued = alice.post("/api/unclassified/suggestions", json={}).json()
+    alice_command_id = alice_queued["command_id"]
+    assert alice_command_id is not None
+
+    resp = bob.post("/api/unclassified/suggestions", json={"command_id": alice_command_id})
+
+    assert resp.status_code == 404
+
+
+def test_rule_conflict_analysis_is_scoped_to_the_calling_account(two_clients):
+    alice, bob = two_clients
+
+    alice_rules = alice.get("/api/rules").json()
+    alice_rules["keyword_rules"].append({"keyword": "invoice", "folder": "Finance/Invoices"})
+    alice_rules["extension_rules"][".pdf"] = "Documents/PDF"
+    alice.put("/api/rules", json=alice_rules)
+
+    alice_result = alice.post("/api/rules/conflicts", json={}).json()
+    bob_result = bob.post("/api/rules/conflicts", json={}).json()
+
+    alice_destinations = {r["destination"] for c in alice_result["conflicts"] for r in c["rules"]}
+    bob_destinations = {r["destination"] for c in bob_result["conflicts"] for r in c["rules"]}
+    assert "Finance/Invoices" in alice_destinations
+    assert "Finance/Invoices" not in bob_destinations
+
+
+def test_duplicate_analysis_never_includes_another_accounts_files(two_clients):
+    alice, bob = two_clients
+    (alice.watch_folder / "alice_a.bin").write_bytes(b"shared bytes")
+    (alice.watch_folder / "alice_b.bin").write_bytes(b"shared bytes")
+    (bob.watch_folder / "bob_a.bin").write_bytes(b"shared bytes")
+    (bob.watch_folder / "bob_b.bin").write_bytes(b"shared bytes")
+
+    alice_result = alice.post("/api/duplicates/analyze", json={}).json()
+
+    names = {f["filename"] for g in alice_result["groups"] for f in g["files"]}
+    assert names == {"alice_a.bin", "alice_b.bin"}
+    assert "bob_a.bin" not in names and "bob_b.bin" not in names
+
+
+def test_cannot_fetch_duplicate_report_for_another_accounts_agent_command(two_clients):
+    alice, bob = two_clients
+
+    def _connect(client):
+        token = client.post("/api/auth/agent-token", json={"scope": "full"}).json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        client.get("/api/agent/rules", headers=headers)  # heartbeat
+
+    # Both accounts need an agent connected -- an unconnected account
+    # ignores command_id entirely and always scans locally instead.
+    _connect(alice)
+    _connect(bob)
+    alice_queued = alice.post("/api/duplicates/analyze", json={}).json()
+    alice_command_id = alice_queued["command_id"]
+    assert alice_command_id is not None
+
+    resp = bob.post("/api/duplicates/analyze", json={"command_id": alice_command_id})
+
+    assert resp.status_code == 404
+
+
+def test_file_search_never_includes_another_accounts_files(two_clients, monkeypatch):
+    from services import file_search_service
+
+    monkeypatch.setattr(
+        file_search_service,
+        "generate_search_completion",
+        lambda prompt: {"status": "ready", "query": {}},
+    )
+    alice, bob = two_clients
+    (alice.watch_folder / "alice_report.pdf").write_bytes(b"content")
+    (bob.watch_folder / "bob_report.pdf").write_bytes(b"content")
+
+    alice_result = alice.post("/api/files/search", json={"query": "find everything"}).json()
+
+    names = {r["filename"] for r in alice_result["results"]}
+    assert names == {"alice_report.pdf"}
+    assert "bob_report.pdf" not in names
+
+
+def test_cannot_fetch_search_result_for_another_accounts_agent_command(two_clients, monkeypatch):
+    from services import file_search_service
+
+    monkeypatch.setattr(
+        file_search_service,
+        "generate_search_completion",
+        lambda prompt: {"status": "ready", "query": {}},
+    )
+    alice, bob = two_clients
+
+    def _connect(client):
+        token = client.post("/api/auth/agent-token", json={"scope": "full"}).json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        client.get("/api/agent/rules", headers=headers)
+
+    _connect(alice)
+    _connect(bob)
+    alice_queued = alice.post("/api/files/search", json={"query": "find everything"}).json()
+    alice_command_id = alice_queued["command_id"]
+    assert alice_command_id is not None
+
+    resp = bob.post("/api/files/search", json={"query": "find everything", "command_id": alice_command_id})
+
+    assert resp.status_code == 404
+
+
+def test_a_candidate_rule_set_posted_by_one_account_never_reaches_the_others_saved_rules(two_clients):
+    alice, bob = two_clients
+    bob_rules_before = bob.get("/api/rules").json()
+
+    candidate = alice.get("/api/rules").json()
+    candidate["keyword_rules"].append({"keyword": "bobs-secret-marker", "folder": "Nowhere"})
+    alice.post("/api/rules/conflicts", json={"rules": candidate})
+
+    assert bob.get("/api/rules").json() == bob_rules_before
+
+
+def test_organization_health_never_reflects_another_accounts_files_rules_or_activity(two_clients):
+    alice, bob = two_clients
+    (alice.watch_folder / "alice_only.pdf").write_bytes(b"content")
+    alice_rules = alice.get("/api/rules").json()
+    alice_rules["keyword_rules"].append({"keyword": "alices-secret-marker", "folder": "Nowhere"})
+    alice.put("/api/rules", json=alice_rules)
+
+    bob_health = bob.get("/api/health/organization").json()
+
+    assert bob_health["files"]["scanned"] == 0
+    assert not any(r["keyword"] == "alices-secret-marker" for r in bob.get("/api/rules").json()["keyword_rules"])
+
+
+def test_organization_health_agent_status_is_per_account(two_clients, db_session):
+    alice, bob = two_clients
+    db_session.users.update_one(
+        {"_id": alice.user_id}, {"$set": {"agent_last_seen_at": datetime.now(timezone.utc)}}
+    )
+
+    bob_health = bob.get("/api/health/organization").json()
+
+    assert bob_health["agent_connected"] is False
+
+
+def test_browser_facing_agent_command_history_is_scoped_per_account(two_clients):
+    # GET /api/agent-commands (the History page's own agent-activity feed)
+    # is queried by user_id alone, never a client-supplied value -- proves
+    # that guarantee directly rather than only relying on every individual
+    # feature's own dual-mode tests each checking just their own client.
+    # A local (non-agent-connected) organize-existing never writes an
+    # agent_commands row at all, so Alice's agent is connected first and an
+    # agent-backed action (duplicate analysis) is used to actually create one.
+    alice, bob = two_clients
+    token = alice.post("/api/auth/agent-token", json={"scope": "full"}).json()["token"]
+    alice.get("/api/agent/rules", headers={"Authorization": f"Bearer {token}"})
+    alice.post("/api/duplicates/analyze", json={})
+
+    assert bob.get("/api/agent-commands").json() == []
+    assert len(alice.get("/api/agent-commands").json()) >= 1

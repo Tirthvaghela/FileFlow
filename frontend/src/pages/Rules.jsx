@@ -2,9 +2,26 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Header from "../components/Header.jsx";
 import ConfirmDialog from "../components/ui/ConfirmDialog.jsx";
 import Toggle from "../components/ui/Toggle.jsx";
-import { Calendar, Download, FileSearch, FlaskConical, Folder, Pencil, Regex, Ruler, Upload, X } from "lucide-react";
+import AIRuleGeneratorDialog from "../components/ui/AIRuleGeneratorDialog.jsx";
+import RuleConflictCard from "../components/ui/RuleConflictCard.jsx";
+import RuleConflictWarningDialog from "../components/ui/RuleConflictWarningDialog.jsx";
+import {
+  Calendar,
+  Download,
+  FileSearch,
+  FlaskConical,
+  Folder,
+  Pencil,
+  Regex,
+  ShieldAlert,
+  Ruler,
+  Sparkles,
+  Upload,
+  X,
+} from "lucide-react";
 import { buildCategoryColorMap, collectKnownFolders } from "../utils/categoryMeta.js";
-import { previewRule, simulateRules } from "../services/api.js";
+import { applyRuleToDoc, FORM_TYPE_TO_RULE_TYPE, proposalFields } from "../utils/ruleForm.js";
+import { checkRuleConflicts, generateAIRule, previewRule, simulateRules } from "../services/api.js";
 import { useRules } from "../context/RulesContext.jsx";
 import { Flip, useGSAP } from "../lib/gsap.js";
 
@@ -73,6 +90,24 @@ export default function Rules() {
   const [simulating, setSimulating] = useState(false);
   const fileInputRef = useRef(null);
 
+  const [conflictCheck, setConflictCheck] = useState(null);
+  const [checkingConflicts, setCheckingConflicts] = useState(false);
+  // { conflicts, onSaveAnyway } while the pre-save warning dialog (Phase
+  // 12/17) is open -- null otherwise. onSaveAnyway calls the exact same
+  // save path the gated action would have used directly; there is no
+  // separate "save with conflict" mechanism.
+  const [pendingConflict, setPendingConflict] = useState(null);
+  const [conflictSaving, setConflictSaving] = useState(false);
+
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiResult, setAiResult] = useState(null);
+  const [aiError, setAiError] = useState("");
+  const [aiSaving, setAiSaving] = useState(false);
+  const [aiImpact, setAiImpact] = useState(null);
+  const [aiCheckingImpact, setAiCheckingImpact] = useState(false);
+
   async function handleSimulate() {
     setSimulating(true);
     try {
@@ -83,6 +118,46 @@ export default function Rules() {
     } finally {
       setSimulating(false);
     }
+  }
+
+  async function handleCheckConflicts() {
+    setCheckingConflicts(true);
+    try {
+      const result = await checkRuleConflicts();
+      setConflictCheck(result);
+    } catch {
+      setConflictCheck({ error: true });
+    } finally {
+      setCheckingConflicts(false);
+    }
+  }
+
+  // Advisory only, and best-effort: a failed conflict check must never
+  // block saving a rule (the deterministic RuleEngine itself, not this
+  // check, remains authoritative -- Phase 12).
+  async function conflictsFor(baseRules, ruleType, fields) {
+    try {
+      const candidate = applyRuleToDoc(baseRules, ruleType, fields);
+      const result = await checkRuleConflicts(candidate);
+      return (result.conflicts || []).filter((c) => c.severity !== "info");
+    } catch {
+      return [];
+    }
+  }
+
+  async function handleConflictSaveAnyway() {
+    if (!pendingConflict || conflictSaving) return;
+    setConflictSaving(true);
+    try {
+      await pendingConflict.onSaveAnyway();
+    } finally {
+      setConflictSaving(false);
+      setPendingConflict(null);
+    }
+  }
+
+  function handleConflictBack() {
+    setPendingConflict(null);
   }
 
   // Debounced dry-run: shows which already-organized files this not-yet-
@@ -401,54 +476,146 @@ export default function Rules() {
     });
   }
 
+  async function commitManualRule(ruleType, fields) {
+    captureFlip();
+    const saved = await persist((current) => applyRuleToDoc(current, ruleType, fields));
+    // Only clear the form on a confirmed save -- a rejected rule (e.g. an
+    // invalid or ReDoS-shaped regex pattern the backend rejects) must
+    // leave what the user typed in place so they can see and fix it, not
+    // silently discard it alongside the generic "Failed to save".
+    if (saved) setForm(emptyForm);
+    return saved;
+  }
+
   async function handleAddRule() {
     if (!form.match.trim() || !form.folder.trim()) return;
     if (form.type === "date" && (Number.isNaN(Number(form.match)) || Number(form.match) < 0)) return;
     if (addingRule) return;
     setAddingRule(true);
-    captureFlip();
     try {
-      let saved = false;
-      if (form.type === "extension") {
-        const ext = form.match.trim().startsWith(".") ? form.match.trim() : `.${form.match.trim()}`;
-        saved = await persist((current) => ({
-          ...current,
-          extension_rules: { ...current.extension_rules, [ext]: form.folder.trim() },
-        }));
-      } else if (form.type === "keyword") {
-        saved = await persist((current) => ({
-          ...current,
-          keyword_rules: [...current.keyword_rules, { keyword: form.match.trim(), folder: form.folder.trim() }],
-        }));
-      } else if (form.type === "regex") {
-        saved = await persist((current) => ({
-          ...current,
-          regex_rules: [...(current.regex_rules || []), { pattern: form.match.trim(), folder: form.folder.trim() }],
-        }));
-      } else if (form.type === "content") {
-        saved = await persist((current) => ({
-          ...current,
-          content_keyword_rules: [
-            ...(current.content_keyword_rules || []),
-            { keyword: form.match.trim(), folder: form.folder.trim() },
-          ],
-        }));
-      } else if (form.type === "date") {
-        saved = await persist((current) => ({
-          ...current,
-          date_rules: [
-            ...(current.date_rules || []),
-            { older_than_days: Number(form.match), folder: form.folder.trim() },
-          ],
-        }));
+      const ruleType = FORM_TYPE_TO_RULE_TYPE[form.type];
+      const fields = {
+        keyword: form.match.trim(),
+        pattern: form.match.trim(),
+        olderThanDays: Number(form.match),
+        destination: form.folder.trim(),
+      };
+      const conflicts = await conflictsFor(rules, ruleType, fields);
+      if (conflicts.length > 0) {
+        setPendingConflict({ conflicts, onSaveAnyway: () => commitManualRule(ruleType, fields) });
+        return;
       }
-      // Only clear the form on a confirmed save -- a rejected rule (e.g. an
-      // invalid or ReDoS-shaped regex pattern the backend rejects) must
-      // leave what the user typed in place so they can see and fix it,
-      // not silently discard it alongside the generic "Failed to save".
-      if (saved) setForm(emptyForm);
+      await commitManualRule(ruleType, fields);
     } finally {
       setAddingRule(false);
+    }
+  }
+
+  function resetAIState() {
+    setAiPrompt("");
+    setAiResult(null);
+    setAiError("");
+    setAiImpact(null);
+  }
+
+  function handleOpenAIDialog() {
+    resetAIState();
+    setAiOpen(true);
+  }
+
+  async function handleGenerateRule() {
+    if (aiGenerating || !aiPrompt.trim()) return;
+    setAiGenerating(true);
+    setAiError("");
+    setAiResult(null);
+    setAiImpact(null);
+    try {
+      const res = await generateAIRule(aiPrompt.trim());
+      setAiResult(res);
+    } catch {
+      setAiError("Couldn't reach the AI service. Try again.");
+    } finally {
+      setAiGenerating(false);
+    }
+  }
+
+  function handleEditRequest() {
+    setAiResult(null);
+    setAiError("");
+    setAiImpact(null);
+  }
+
+  function handleRejectAI() {
+    setAiOpen(false);
+    resetAIState();
+  }
+
+  async function handleCheckAIImpact() {
+    if (!aiResult?.proposal || aiCheckingImpact) return;
+    setAiCheckingImpact(true);
+    try {
+      const candidate = applyRuleToDoc(rules, aiResult.proposal.rule_type, proposalFields(aiResult.proposal));
+      const result = await simulateRules(candidate);
+      setAiImpact(result);
+    } catch {
+      setAiImpact({ error: true });
+    } finally {
+      setAiCheckingImpact(false);
+    }
+  }
+
+  // Prefers folding the proposal into the existing manual "New rule" form
+  // over a separate saving mechanism (per the feature's own design intent)
+  // -- the user still has to press the existing, already-validated "Add
+  // rule" button to actually save it. large_file has no such form (it's a
+  // singleton toggle, not a list the manual UI lets you "add" to), so
+  // editing it is the same as applying it directly, exactly like the
+  // existing size-rule toggle already does.
+  function handleEditAIProposal(proposal) {
+    if (proposal.rule_type === "large_file") {
+      handleSaveAIProposal(proposal);
+      return;
+    }
+    const formType =
+      Object.entries(FORM_TYPE_TO_RULE_TYPE).find(([, rt]) => rt === proposal.rule_type)?.[0] || "keyword";
+    setForm({
+      type: formType,
+      match:
+        proposal.rule_type === "regex"
+          ? proposal.pattern || ""
+          : proposal.rule_type === "date"
+            ? String(proposal.older_than_days ?? "")
+            : proposal.keyword || "",
+      folder: proposal.destination || "",
+    });
+    setAiOpen(false);
+    resetAIState();
+  }
+
+  async function commitAIProposal(proposal) {
+    captureFlip();
+    const saved = await persist((current) =>
+      applyRuleToDoc(current, proposal.rule_type, proposalFields(proposal)),
+    );
+    if (saved) {
+      setAiOpen(false);
+      resetAIState();
+    }
+    return saved;
+  }
+
+  async function handleSaveAIProposal(proposal) {
+    if (aiSaving) return;
+    setAiSaving(true);
+    try {
+      const conflicts = await conflictsFor(rules, proposal.rule_type, proposalFields(proposal));
+      if (conflicts.length > 0) {
+        setPendingConflict({ conflicts, onSaveAnyway: () => commitAIProposal(proposal) });
+        return;
+      }
+      await commitAIProposal(proposal);
+    } finally {
+      setAiSaving(false);
     }
   }
 
@@ -481,6 +648,14 @@ export default function Rules() {
     <>
       <Header title="Automation rules" subtitle="Route files by extension, keyword or size" />
       <div className="flex items-center justify-end gap-2 px-8 pt-6">
+        <button
+          type="button"
+          onClick={handleOpenAIDialog}
+          className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface-1)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--gridline)]"
+        >
+          <Sparkles className="h-3.5 w-3.5" />
+          Create with AI
+        </button>
         {importError && (
           <span className="text-xs" style={{ color: "var(--status-critical)" }}>
             {importError}
@@ -519,6 +694,16 @@ export default function Rules() {
           <FlaskConical className="h-3.5 w-3.5" />
           {simulating ? "Checking…" : "Check impact"}
         </button>
+        <button
+          type="button"
+          onClick={handleCheckConflicts}
+          disabled={checkingConflicts}
+          title="Check whether any of your rules can match the same file and disagree on where it goes"
+          className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface-1)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--gridline)] disabled:opacity-50"
+        >
+          <ShieldAlert className="h-3.5 w-3.5" />
+          {checkingConflicts ? "Checking…" : "Check conflicts"}
+        </button>
       </div>
 
       {simulation && (
@@ -556,6 +741,43 @@ export default function Rules() {
                   {simulation.compared_count - simulation.unchanged_count > simulation.changes.length && (
                     <p className="pt-1 text-center text-xs text-[var(--text-muted)]">
                       Showing the first {simulation.changes.length} changes.
+                    </p>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {conflictCheck && (
+        <div className="mx-8 mt-4 rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-4 shadow-sm">
+          {conflictCheck.error ? (
+            <p className="text-sm text-[var(--status-critical)]">Couldn't check rule conflicts. Try again.</p>
+          ) : (
+            <>
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-sm font-medium text-[var(--text-primary)]">
+                  {conflictCheck.rules_checked} rule{conflictCheck.rules_checked === 1 ? "" : "s"} checked
+                  {conflictCheck.total === 0
+                    ? " — no potential conflicts found."
+                    : ` — ${conflictCheck.warnings} potential overlap${conflictCheck.warnings === 1 ? "" : "s"}, ${conflictCheck.high} rule${conflictCheck.high === 1 ? "" : "s"} fully shadowed, ${conflictCheck.info} informational.`}
+                </h3>
+                <button
+                  onClick={() => setConflictCheck(null)}
+                  className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              {conflictCheck.conflicts.length > 0 && (
+                <div className="max-h-80 space-y-2 overflow-y-auto">
+                  {conflictCheck.conflicts.map((c, i) => (
+                    <RuleConflictCard key={i} conflict={c} />
+                  ))}
+                  {conflictCheck.truncated && (
+                    <p className="pt-1 text-center text-xs text-[var(--text-muted)]">
+                      Showing the first {conflictCheck.conflicts.length} conflicts.
                     </p>
                   )}
                 </div>
@@ -928,6 +1150,34 @@ export default function Rules() {
         confirmLabel="Replace rules"
         variant="destructive"
         onConfirm={confirmImport}
+      />
+
+      <AIRuleGeneratorDialog
+        open={aiOpen}
+        onOpenChange={setAiOpen}
+        prompt={aiPrompt}
+        onPromptChange={setAiPrompt}
+        generating={aiGenerating}
+        result={aiResult}
+        error={aiError}
+        saving={aiSaving}
+        impact={aiImpact}
+        checkingImpact={aiCheckingImpact}
+        onGenerate={handleGenerateRule}
+        onCheckImpact={handleCheckAIImpact}
+        onEditRequest={handleEditRequest}
+        onEdit={handleEditAIProposal}
+        onReject={handleRejectAI}
+        onSaveRule={handleSaveAIProposal}
+      />
+
+      <RuleConflictWarningDialog
+        open={pendingConflict !== null}
+        onOpenChange={(open) => !open && setPendingConflict(null)}
+        conflicts={pendingConflict?.conflicts || []}
+        saving={conflictSaving}
+        onBack={handleConflictBack}
+        onSaveAnyway={handleConflictSaveAnyway}
       />
     </>
   );

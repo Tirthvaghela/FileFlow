@@ -48,6 +48,162 @@ def is_within_watch_folder(folder: str, watch_root: Path) -> bool:
     return candidate == root or root in candidate.parents
 
 
+# The fixed order classify_file_explained() actually evaluates rule types
+# in (see its body) -- exposed as each match's "priority" in the
+# explanation so a caller can show *why* one matching rule won out over
+# another that also would have matched, without re-deriving the order
+# itself. Real, not fabricated: this is the one true evaluation order the
+# function below follows.
+MATCH_TYPE_PRIORITY = {
+    "keyword": 1,
+    "regex": 2,
+    "content_keyword": 3,
+    "extension": 4,
+    "large_file": 5,
+    "date": 6,
+    "category": 7,
+    "auto_extension": 8,
+    "default": 9,
+}
+
+
+def _explanation(match_type: str, matched_value, destination: str, rule_name: str | None) -> dict:
+    return {
+        "match_type": match_type,
+        "matched_value": matched_value,
+        "destination": destination,
+        "rule_name": rule_name,
+        "priority": MATCH_TYPE_PRIORITY[match_type],
+    }
+
+
+def classify_file_explained(
+    rules: dict,
+    filename: str,
+    file_size_bytes: int,
+    watch_root: Path,
+    file_path: Path | None = None,
+) -> dict:
+    """Same classification decision as classify_file() below, but returns
+    the full explanation alongside the destination: which rule actually
+    matched (if any), its match type and matched value, a human-readable
+    rule_name built from that same real data (never a fabricated title --
+    this app's rules have no separate name field), and the fixed
+    evaluation-order priority that decided it.
+
+    This is the single source of truth for both the plain destination
+    string (classify_file() is a thin wrapper over this) and the
+    "why did this file go here" explanation persisted alongside the
+    activity log -- the two are produced by the exact same evaluation and
+    can never disagree with each other.
+
+    See classify_file()'s docstring for what each parameter means and
+    when file_path may be omitted. match_type is always "default" (with a
+    null matched_value/rule_name) when nothing more specific matched --
+    that's the "no matching rule" case, never attributed to a rule that
+    didn't actually match."""
+    name_lower = filename.lower()
+    ext = Path(filename).suffix.lower()
+
+    def validated(folder: str) -> str | None:
+        if is_within_watch_folder(folder, watch_root):
+            return folder
+        logger.warning("Ignoring rule destination outside the watch folder: %r", folder)
+        return None
+
+    for rule in rules.get("keyword_rules", []):
+        if rule["keyword"].lower() in name_lower:
+            folder = validated(rule["folder"])
+            if folder:
+                return _explanation(
+                    "keyword", rule["keyword"], folder, f'Keyword "{rule["keyword"]}"'
+                )
+
+    for rule in rules.get("regex_rules", []):
+        try:
+            matched = re.search(rule["pattern"], filename, re.IGNORECASE)
+        except re.error:
+            logger.warning("Skipping invalid regex rule pattern: %r", rule["pattern"])
+            continue
+        if matched:
+            folder = validated(rule["folder"])
+            if folder:
+                return _explanation(
+                    "regex", rule["pattern"], folder, f'Regex pattern "{rule["pattern"]}"'
+                )
+
+    content_rules = rules.get("content_keyword_rules", [])
+    if content_rules and file_path is not None:
+        snippet = _read_content_snippet(file_path)
+        if snippet is not None:
+            for rule in content_rules:
+                if rule["keyword"].lower() in snippet:
+                    folder = validated(rule["folder"])
+                    if folder:
+                        return _explanation(
+                            "content_keyword",
+                            rule["keyword"],
+                            folder,
+                            f'File content contains "{rule["keyword"]}"',
+                        )
+
+    extension_rules = rules.get("extension_rules", {})
+    if ext in extension_rules:
+        folder = validated(extension_rules[ext])
+        if folder:
+            return _explanation("extension", ext, folder, f'Extension "{ext}"')
+
+    threshold_mb = rules.get("large_file_threshold_mb")
+    if (
+        rules.get("large_file_enabled", True)
+        and threshold_mb
+        and file_size_bytes > threshold_mb * 1024 * 1024
+    ):
+        folder = validated(rules.get("large_file_folder", "Large Files"))
+        if folder:
+            return _explanation(
+                "large_file",
+                f"> {threshold_mb} MB",
+                folder,
+                f"Large file (over {threshold_mb} MB)",
+            )
+
+    if file_path is not None:
+        for rule in rules.get("date_rules", []):
+            try:
+                age_days = (time.time() - file_path.stat().st_mtime) / 86400
+            except OSError:
+                continue
+            if age_days >= rule["older_than_days"]:
+                folder = validated(rule["folder"])
+                if folder:
+                    return _explanation(
+                        "date",
+                        f"> {rule['older_than_days']} days old",
+                        folder,
+                        f"File age (over {rule['older_than_days']} days old)",
+                    )
+
+    for category, extensions in rules.get("categories", {}).items():
+        if ext in extensions:
+            folder = validated(category) or "Others"
+            return _explanation("category", ext, folder, f'Category "{category}"')
+
+    if ext and rules.get("auto_organize_unknown_extensions", True):
+        auto_folder = f"{ext[1:].upper()} Files"
+        folder = validated(auto_folder)
+        if folder:
+            return _explanation(
+                "auto_extension",
+                ext,
+                folder,
+                f'Automatic grouping by extension "{ext}"',
+            )
+
+    destination = validated(rules.get("default_category", "Others")) or "Others"
+    return _explanation("default", None, destination, None)
+
+
 def classify_file(
     rules: dict,
     filename: str,
@@ -62,80 +218,9 @@ def classify_file(
     content_keyword_rules reads its bytes) -- every caller that only has a
     bare filename (existing tests, a dry-run preview) can omit it and those
     two rule types simply never match, exactly as if they were unset."""
-    name_lower = filename.lower()
-    ext = Path(filename).suffix.lower()
-
-    def validated(folder: str) -> str | None:
-        if is_within_watch_folder(folder, watch_root):
-            return folder
-        logger.warning("Ignoring rule destination outside the watch folder: %r", folder)
-        return None
-
-    for rule in rules.get("keyword_rules", []):
-        if rule["keyword"].lower() in name_lower:
-            folder = validated(rule["folder"])
-            if folder:
-                return folder
-
-    for rule in rules.get("regex_rules", []):
-        try:
-            matched = re.search(rule["pattern"], filename, re.IGNORECASE)
-        except re.error:
-            logger.warning("Skipping invalid regex rule pattern: %r", rule["pattern"])
-            continue
-        if matched:
-            folder = validated(rule["folder"])
-            if folder:
-                return folder
-
-    content_rules = rules.get("content_keyword_rules", [])
-    if content_rules and file_path is not None:
-        snippet = _read_content_snippet(file_path)
-        if snippet is not None:
-            for rule in content_rules:
-                if rule["keyword"].lower() in snippet:
-                    folder = validated(rule["folder"])
-                    if folder:
-                        return folder
-
-    extension_rules = rules.get("extension_rules", {})
-    if ext in extension_rules:
-        folder = validated(extension_rules[ext])
-        if folder:
-            return folder
-
-    threshold_mb = rules.get("large_file_threshold_mb")
-    if (
-        rules.get("large_file_enabled", True)
-        and threshold_mb
-        and file_size_bytes > threshold_mb * 1024 * 1024
-    ):
-        folder = validated(rules.get("large_file_folder", "Large Files"))
-        if folder:
-            return folder
-
-    if file_path is not None:
-        for rule in rules.get("date_rules", []):
-            try:
-                age_days = (time.time() - file_path.stat().st_mtime) / 86400
-            except OSError:
-                continue
-            if age_days >= rule["older_than_days"]:
-                folder = validated(rule["folder"])
-                if folder:
-                    return folder
-
-    for category, extensions in rules.get("categories", {}).items():
-        if ext in extensions:
-            return validated(category) or "Others"
-
-    if ext and rules.get("auto_organize_unknown_extensions", True):
-        auto_folder = f"{ext[1:].upper()} Files"
-        folder = validated(auto_folder)
-        if folder:
-            return folder
-
-    return validated(rules.get("default_category", "Others")) or "Others"
+    return classify_file_explained(rules, filename, file_size_bytes, watch_root, file_path)[
+        "destination"
+    ]
 
 
 def should_timestamp_rename(rules: dict, category: str) -> bool:

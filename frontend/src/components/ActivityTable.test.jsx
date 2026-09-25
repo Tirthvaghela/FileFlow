@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import ActivityTable from "./ActivityTable.jsx";
 
@@ -195,5 +195,122 @@ describe("ActivityTable's per-row agent-command status badge", () => {
 
     expect(screen.getByRole("button", { name: /undo/i })).toBeInTheDocument();
     expect(screen.getByTitle("Move this file to a different category")).toBeInTheDocument();
+  });
+});
+
+describe("ActivityTable's 'Why?' explanation", () => {
+  it("does not show a Why button when the log has no explanation", () => {
+    render(<ActivityTable logs={[makeLog()]} />);
+
+    expect(screen.queryByRole("button", { name: /why/i })).not.toBeInTheDocument();
+  });
+
+  it("shows a Why button when the log carries an explanation", () => {
+    render(
+      <ActivityTable
+        logs={[
+          makeLog({
+            explanation: {
+              match_type: "keyword",
+              matched_value: "invoice",
+              destination: "Finance Folder",
+              rule_name: 'Keyword "invoice"',
+              priority: 1,
+            },
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /why/i })).toBeInTheDocument();
+  });
+
+  it("reveals the correct rule, match type, matched value, and destination on click", () => {
+    render(
+      <ActivityTable
+        logs={[
+          makeLog({
+            explanation: {
+              match_type: "keyword",
+              matched_value: "invoice",
+              destination: "Finance Folder",
+              rule_name: 'Keyword "invoice"',
+              priority: 1,
+            },
+          }),
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /why/i }));
+
+    expect(screen.getByText('Keyword "invoice"')).toBeInTheDocument();
+    expect(screen.getByText("Keyword")).toBeInTheDocument();
+    expect(screen.getByText('"invoice"')).toBeInTheDocument();
+    expect(screen.getByText("Finance Folder")).toBeInTheDocument();
+    expect(screen.getByText("1")).toBeInTheDocument();
+  });
+
+  it("collapses again on a second click", () => {
+    render(
+      <ActivityTable
+        logs={[
+          makeLog({
+            explanation: { match_type: "extension", matched_value: ".pdf", destination: "Documents", rule_name: 'Extension ".pdf"', priority: 4 },
+          }),
+        ]}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: /why/i });
+    fireEvent.click(button);
+    expect(screen.getByText('Extension ".pdf"')).toBeInTheDocument();
+
+    fireEvent.click(button);
+    expect(screen.queryByText('Extension ".pdf"')).not.toBeInTheDocument();
+  });
+
+  it("shows a 'no matching rule' message for a default-category explanation, never fabricating a rule", () => {
+    render(
+      <ActivityTable
+        logs={[
+          makeLog({
+            explanation: {
+              match_type: "default",
+              matched_value: null,
+              destination: "Others",
+              rule_name: null,
+              priority: 9,
+            },
+          }),
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /why/i }));
+
+    expect(screen.getByText(/no matching rule/i)).toBeInTheDocument();
+  });
+
+  it("renders no raw JSON in the explanation panel", () => {
+    render(
+      <ActivityTable
+        logs={[
+          makeLog({
+            explanation: {
+              match_type: "keyword",
+              matched_value: "invoice",
+              destination: "Finance Folder",
+              rule_name: 'Keyword "invoice"',
+              priority: 1,
+            },
+          }),
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /why/i }));
+
+    expect(document.body.textContent).not.toMatch(/[{}]/);
   });
 });

@@ -20,7 +20,7 @@ from automation.file_ops import (
     resolve_destination,
     wait_for_stable_file,
 )
-from rules.classifier import classify_file
+from rules.classifier import classify_file_explained
 from services.notification_service import notify
 from services.uipath_service import execute_move_via_uipath
 
@@ -144,7 +144,8 @@ def process_download(client, watch_root: Path, outbox_conn, path: Path) -> None:
 
     rules = rules_cache.get_rules(client)
     file_size = path.stat().st_size
-    category = classify_file(rules, path.name, file_size, watch_root, file_path=path)
+    explanation = classify_file_explained(rules, path.name, file_size, watch_root, file_path=path)
+    category = explanation["destination"]
     dest_folder = watch_root / category
     dest_folder.mkdir(parents=True, exist_ok=True)
 
@@ -165,6 +166,7 @@ def process_download(client, watch_root: Path, outbox_conn, path: Path) -> None:
                 file_size=file_size,
                 file_hash=file_hash,
                 client_ref=str(uuid.uuid4()),
+                explanation=explanation,
             )
             notify("Duplicate Skipped", f"{path.name} already exists in {category}", rules)
             return
@@ -193,6 +195,7 @@ def process_download(client, watch_root: Path, outbox_conn, path: Path) -> None:
         file_size=file_size,
         file_hash=file_hash,
         client_ref=str(uuid.uuid4()),
+        explanation=explanation,
     )
     notify("File Organized Successfully", f"{dest_path.name} moved to {category}", rules)
     logger.info("Organized %s -> %s", path.name, dest_path)

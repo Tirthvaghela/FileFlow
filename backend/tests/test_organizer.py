@@ -6,6 +6,7 @@ from automation.organizer import (
     build_final_name,
     compute_hash,
     organize_existing_files,
+    plan_organize_existing,
     process_file,
     reclassify_file,
     resolve_destination,
@@ -191,6 +192,46 @@ class TestProcessFile:
         assert rows[0].original_filename == "notes.txt"
         assert rows[0].undone is False
         assert rows[0].user_id == test_user["id"]
+
+    def test_activity_log_carries_the_explanation_that_actually_decided_the_destination(
+        self, watch_folder, test_rules, db_session, test_user
+    ):
+        source = _write(watch_folder / "Invoice_March.pdf", "invoice contents")
+
+        log = process_file(source, db_session, test_user)
+
+        assert log.explanation["match_type"] == "keyword"
+        assert log.explanation["matched_value"] == "invoice"
+        # Must never disagree with the actual destination the file landed in.
+        assert log.explanation["destination"] == log.category == "Finance Folder"
+        row = Document(db_session.activity_log.find_one({"_id": log.id}))
+        assert row.explanation == log.explanation
+
+    def test_duplicate_skipped_entries_also_carry_an_explanation(
+        self, watch_folder, test_rules, db_session, test_user
+    ):
+        _write(watch_folder / "notes.txt", "same content")
+        process_file(watch_folder / "notes.txt", db_session, test_user)
+        _write(watch_folder / "notes.txt", "same content")
+
+        log = process_file(watch_folder / "notes.txt", db_session, test_user)
+
+        assert log.action == "duplicate_skipped"
+        assert log.explanation is not None
+        assert log.explanation["destination"] == log.category
+
+    def test_a_file_with_no_matching_rule_gets_a_default_explanation(
+        self, watch_folder, test_rules, db_session, test_user
+    ):
+        source = _write(watch_folder / "mystery.xyz123", "??")
+        test_rules["auto_organize_unknown_extensions"] = False
+
+        log = process_file(source, db_session, test_user)
+
+        assert log.category == "Others"
+        assert log.explanation["match_type"] == "default"
+        assert log.explanation["matched_value"] is None
+        assert log.explanation["rule_name"] is None
 
 
 class TestProcessFileUiPathWiring:
@@ -465,6 +506,23 @@ class TestReclassifyFile:
         assert original_log.action == "moved"
         assert original_log.category == "Documents"
 
+    def test_a_manual_reclassify_carries_no_explanation(
+        self, watch_folder, test_rules, db_session, test_user
+    ):
+        # No rule was evaluated here at all -- the user picked "Design"
+        # themselves. Attributing this to a rule would be a fabricated
+        # explanation, so the reclassified row must simply have none.
+        source = _write(watch_folder / "notes.txt", "hi")
+        original_log = process_file(source, db_session, test_user)
+        assert original_log.explanation is not None
+
+        success, message, new_log = reclassify_file(
+            original_log.id, "Design", db_session, test_user
+        )
+
+        assert success is True
+        assert new_log.get("explanation") is None
+
     def test_fails_for_an_entry_with_no_destination_path(
         self, test_rules, db_session, test_user, log_factory
     ):
@@ -602,3 +660,187 @@ class TestReclassifyFile:
             "reclassify must never move a file into a different top-level watch "
             "folder than the one it actually came from"
         )
+
+
+class TestPlanOrganizeExisting:
+    """plan_organize_existing() -- the read-only dry run behind the
+    Organization Preview feature. Must discover the same files
+    organize_existing_files() would and plan the exact same decision via
+    the shared plan_file_organization() (automation/file_ops.py), without
+    ever touching the filesystem beyond reads."""
+
+    def test_returns_the_correct_planned_destination(
+        self, watch_folder, test_rules, db_session, test_user
+    ):
+        _write(watch_folder / "Invoice_March.pdf", "invoice contents")
+
+        items = plan_organize_existing(db_session, test_user)
+
+        assert len(items) == 1
+        assert items[0]["filename"] == "Invoice_March.pdf"
+        assert items[0]["category"] == "Finance Folder"
+        assert items[0]["destination_path"] == str(
+            watch_folder / "Finance Folder" / "Invoice_March.pdf"
+        )
+        assert items[0]["status"] == "ready"
+
+    def test_uses_the_real_classifier_and_carries_the_real_explanation(
+        self, watch_folder, test_rules, db_session, test_user
+    ):
+        _write(watch_folder / "Invoice_March.pdf", "invoice contents")
+
+        items = plan_organize_existing(db_session, test_user)
+
+        explanation = items[0]["explanation"]
+        assert explanation["match_type"] == "keyword"
+        assert explanation["matched_value"] == "invoice"
+        # Must never disagree with the item's own planned destination.
+        assert explanation["destination"] == items[0]["category"] == "Finance Folder"
+
+    def test_never_moves_renames_or_deletes_anything(
+        self, watch_folder, test_rules, db_session, test_user
+    ):
+        source = _write(watch_folder / "notes.txt", "hi")
+        before = source.stat().st_mtime
+
+        plan_organize_existing(db_session, test_user)
+
+        assert source.exists(), "the source file must still be exactly where it was"
+        assert source.read_text() == "hi"
+        assert source.stat().st_mtime == before
+        assert not (watch_folder / "Documents").exists(), (
+            "preview must never even create the destination folder"
+        )
+
+    def test_creates_no_activity_log_rows(self, watch_folder, test_rules, db_session, test_user):
+        _write(watch_folder / "notes.txt", "hi")
+        _write(watch_folder / "report.pdf", "pdf contents")
+
+        plan_organize_existing(db_session, test_user)
+
+        assert db_session.activity_log.count_documents({}) == 0
+
+    def test_no_matching_rule_is_flagged_no_match_not_a_fabricated_rule(
+        self, watch_folder, test_rules, db_session, test_user
+    ):
+        _write(watch_folder / "mystery.xyz123", "??")
+        test_rules["auto_organize_unknown_extensions"] = False
+
+        items = plan_organize_existing(db_session, test_user)
+
+        assert items[0]["status"] == "no_match"
+        assert items[0]["explanation"]["match_type"] == "default"
+        assert items[0]["explanation"]["rule_name"] is None
+
+    def test_a_duplicate_is_flagged_and_still_carries_its_explanation(
+        self, watch_folder, test_rules, db_session, test_user
+    ):
+        dest = watch_folder / "Documents"
+        dest.mkdir()
+        _write(dest / "notes.txt", "same content")
+        _write(watch_folder / "notes.txt", "same content")
+
+        items = plan_organize_existing(db_session, test_user)
+
+        assert items[0]["status"] == "duplicate"
+        assert items[0]["action"] == "duplicate_skipped"
+        assert items[0]["explanation"] is not None
+
+    def test_a_genuine_name_collision_with_different_content_is_previewed_as_a_rename(
+        self, watch_folder, test_rules, db_session, test_user
+    ):
+        # Same collision-handling resolve_destination() already applies for
+        # real ("rename" mode, different content -> " (1)" suffix) -- the
+        # preview must show that exact same planned outcome, not a
+        # different, preview-only conflict policy.
+        dest = watch_folder / "Documents"
+        dest.mkdir()
+        (dest / "notes.txt").write_text("original content")
+        _write(watch_folder / "notes.txt", "different content")
+
+        items = plan_organize_existing(db_session, test_user)
+
+        assert items[0]["action"] == "renamed_and_moved"
+        assert items[0]["status"] == "ready"
+        assert items[0]["destination_path"] == str(dest / "notes (1).txt")
+
+    def test_multiple_files_produce_independent_results(
+        self, watch_folder, test_rules, db_session, test_user
+    ):
+        _write(watch_folder / "Invoice_March.pdf", "invoice contents")
+        _write(watch_folder / "script.py", "print('hi')")
+        _write(watch_folder / "photo.jpg", "img")
+
+        items = plan_organize_existing(db_session, test_user)
+
+        by_name = {i["filename"]: i for i in items}
+        assert by_name["Invoice_March.pdf"]["category"] == "Finance Folder"
+        assert by_name["script.py"]["category"] == "Python Projects"
+        assert by_name["photo.jpg"]["category"] == "Images"
+
+    def test_one_unreadable_file_does_not_abort_the_rest_of_the_preview(
+        self, watch_folder, test_rules, db_session, test_user, monkeypatch
+    ):
+        _write(watch_folder / "good.pdf", "pdf contents")
+        broken = _write(watch_folder / "broken.pdf", "pdf contents")
+
+        real_plan = organizer.plan_file_organization
+
+        def _flaky(source_path, *args, **kwargs):
+            if source_path.name == "broken.pdf":
+                raise OSError("simulated unreadable file")
+            return real_plan(source_path, *args, **kwargs)
+
+        monkeypatch.setattr(organizer, "plan_file_organization", _flaky)
+
+        items = plan_organize_existing(db_session, test_user)
+
+        by_name = {i["filename"]: i for i in items}
+        assert by_name["good.pdf"]["status"] == "ready"
+        assert by_name["broken.pdf"]["status"] == "error"
+        assert by_name["broken.pdf"]["explanation"] is None
+        # A safe message, never a raw exception/traceback.
+        assert "simulated unreadable file" not in by_name["broken.pdf"]["error"]
+
+    def test_rule_priority_is_preserved_over_a_weaker_match(
+        self, watch_folder, test_rules, db_session, test_user
+    ):
+        # "Invoice_March.pdf" would map to Documents by extension/category
+        # alone -- the keyword rule (priority 1) must still win in preview,
+        # exactly as it does for the real operation.
+        _write(watch_folder / "Invoice_March.pdf", "invoice contents")
+
+        items = plan_organize_existing(db_session, test_user)
+
+        assert items[0]["category"] == "Finance Folder"
+        assert items[0]["explanation"]["priority"] == 1
+
+    def test_sweeps_additional_watch_folders_too(
+        self, watch_folder, test_rules, db_session, test_user, tmp_path
+    ):
+        extra = tmp_path / "extra_watch_folder"
+        extra.mkdir()
+        user = {**test_user, "additional_watch_folders": [str(extra)]}
+        _write(watch_folder / "notes.txt", "hi")
+        _write(extra / "script.py", "print(1)")
+
+        items = plan_organize_existing(db_session, user)
+
+        by_name = {i["filename"]: i for i in items}
+        assert by_name["notes.txt"]["destination_path"] == str(
+            watch_folder / "Documents" / "notes.txt"
+        )
+        assert by_name["script.py"]["destination_path"] == str(
+            extra / "Python Projects" / "script.py"
+        )
+
+    def test_already_organized_files_are_not_rescanned(
+        self, watch_folder, test_rules, db_session, test_user
+    ):
+        already = watch_folder / "Documents" / "already_organized.pdf"
+        already.parent.mkdir(parents=True)
+        already.write_text("hi")
+
+        items = plan_organize_existing(db_session, test_user)
+
+        assert items == []

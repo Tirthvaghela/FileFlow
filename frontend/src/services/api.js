@@ -81,6 +81,10 @@ export const previewRule = (type, match) =>
   api.post("/api/rules/preview", { type, match }).then((r) => r.data);
 export const simulateRules = (candidateRules) =>
   api.post("/api/rules/simulate", candidateRules).then((r) => r.data);
+export const generateAIRule = (prompt) =>
+  api.post("/api/rules/ai-generate", { prompt }).then((r) => r.data);
+export const checkRuleConflicts = (candidateRules) =>
+  api.post("/api/rules/conflicts", { rules: candidateRules ?? null }).then((r) => r.data);
 export const reclassifyLog = (logId, category) =>
   api.post(`/api/logs/${logId}/reclassify`, { category }).then((r) => r.data);
 export const getCategoryFiles = (category) =>
@@ -91,6 +95,16 @@ export const deleteCategoryFile = (category, path) =>
     .then((r) => r.data);
 export const organizeExistingFiles = () =>
   api.post("/api/organize-existing").then((r) => r.data);
+export const previewOrganizeExisting = () =>
+  api.post("/api/organize/preview").then((r) => r.data);
+export const getUnclassifiedSuggestions = (commandId) =>
+  api.post("/api/unclassified/suggestions", { command_id: commandId ?? null }).then((r) => r.data);
+export const analyzeDuplicates = (commandId) =>
+  api.post("/api/duplicates/analyze", { command_id: commandId ?? null }).then((r) => r.data);
+export const searchFiles = (query, commandId) =>
+  api.post("/api/files/search", { query, command_id: commandId ?? null }).then((r) => r.data);
+export const getOrganizationHealth = () =>
+  api.get("/api/health/organization").then((r) => r.data);
 export const simulateDownloadUrl = () => `${API_BASE}/api/simulate-download`;
 // The ?t= cache-buster matters: this URL serves different bytes every time
 // a new version ships, and a browser that already cached an older response

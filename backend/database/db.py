@@ -56,6 +56,15 @@ def init_db(database=None) -> None:
     # Agent polls GET /api/agent/commands filtered on exactly these two
     # fields, ordered by _id -- same compound-index shape as activity_log.
     database.agent_commands.create_index([("user_id", 1), ("status", 1)])
+    # GET /api/agent-commands (History's browser-facing agent-activity feed,
+    # api/routes.py::list_agent_commands) filters by user_id alone (plus
+    # optional type/source/log_id) and sorts by _id desc, capped at 100 --
+    # the exact same "per-user, newest first" shape activity_log's own
+    # (user_id, _id) index above exists for. Without this, that sort falls
+    # back to an in-memory sort of every command the account has ever
+    # issued once agent_commands grows large (Feature 5 audit finding: this
+    # collection currently has no retention/cleanup, so it only grows).
+    database.agent_commands.create_index([("user_id", 1), ("_id", -1)])
     # Lets POST /api/agent/activity recognize a retried report (agent
     # outbox.py's flush_outbox() delivering the same client_ref again
     # after a response got lost) instead of inserting a duplicate row.

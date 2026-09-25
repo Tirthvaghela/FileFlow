@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 from config.settings import settings
-from rules.classifier import classify_file, is_within_watch_folder
+from rules.classifier import classify_file, classify_file_explained, is_within_watch_folder
 from rules.classifier import should_timestamp_rename as _should_timestamp_rename
 
 _lock = threading.Lock()
@@ -59,6 +59,17 @@ class RuleEngine:
     def classify(self, filename: str, file_size_bytes: int, file_path: Path | None = None) -> str:
         """Return the destination folder name for a given file."""
         return classify_file(self.rules, filename, file_size_bytes, self.watch_root, file_path)
+
+    def classify_explained(
+        self, filename: str, file_size_bytes: int, file_path: Path | None = None
+    ) -> dict:
+        """Same decision as classify() above, plus the explanation of which
+        rule (if any) produced it -- see classify_file_explained()'s
+        docstring, rules.classifier. Both methods evaluate the exact same
+        rules dict; classify() is never re-derived independently."""
+        return classify_file_explained(
+            self.rules, filename, file_size_bytes, self.watch_root, file_path
+        )
 
     def should_timestamp_rename(self, category: str) -> bool:
         return _should_timestamp_rename(self.rules, category)

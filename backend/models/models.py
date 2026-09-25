@@ -34,6 +34,15 @@ ACTIVITY_LOG_ACTIONS = (
 
 def new_activity_log(**kwargs) -> Document:
     client_ref = kwargs.pop("client_ref", None)
+    # Snapshot of which rule (if any) produced this row's category/
+    # destination, taken from the SAME classify_file_explained() call that
+    # decided them -- see rules/classifier.py. Omitted entirely (not set to
+    # None) for anything that didn't go through classification at all
+    # (reclassify_file's manual override, the archive sweep, undo) so those
+    # rows read as "not applicable" rather than "no rule matched", and so a
+    # record from before this field existed is indistinguishable from one
+    # that's genuinely inapplicable -- both simply lack the key.
+    explanation = kwargs.pop("explanation", None)
     doc = Document(
         user_id=kwargs.pop("user_id"),
         timestamp=kwargs.pop("timestamp", None) or utcnow(),
@@ -57,6 +66,8 @@ def new_activity_log(**kwargs) -> Document:
     # of each other the moment a second one exists for the same user.
     if client_ref is not None:
         doc["client_ref"] = client_ref
+    if explanation is not None:
+        doc["explanation"] = explanation
     return doc
 
 

@@ -1,6 +1,58 @@
-import { Activity } from "lucide-react";
+import { useState } from "react";
+import { Activity, ChevronDown, ChevronUp } from "lucide-react";
 import EmptyState from "./EmptyState.jsx";
 import { categoryBadge } from "../utils/categoryMeta.js";
+
+// Labels the explanation's own match_type (rules/classifier.py's
+// MATCH_TYPE_PRIORITY) as the short, human-facing "Match" line -- kept
+// separate from rule_name, which already describes the specific rule.
+const MATCH_TYPE_LABEL = {
+  keyword: "Keyword",
+  regex: "Regex",
+  content_keyword: "File content",
+  extension: "Extension",
+  large_file: "Large file",
+  date: "File age",
+  category: "Category",
+  auto_extension: "Automatic grouping",
+  default: "Default category",
+};
+
+function ExplanationDetails({ explanation }) {
+  if (!explanation || explanation.match_type === "default") {
+    return (
+      <p className="text-xs text-[var(--text-secondary)]">
+        No matching rule — this file was placed in the account's default category.
+      </p>
+    );
+  }
+  return (
+    <ul className="space-y-1 text-xs text-[var(--text-secondary)]">
+      {explanation.rule_name && (
+        <li>
+          <span className="text-[var(--text-muted)]">Rule:</span> {explanation.rule_name}
+        </li>
+      )}
+      <li>
+        <span className="text-[var(--text-muted)]">Match type:</span>{" "}
+        {MATCH_TYPE_LABEL[explanation.match_type] || explanation.match_type}
+      </li>
+      {explanation.matched_value && (
+        <li>
+          <span className="text-[var(--text-muted)]">Matched:</span> "{explanation.matched_value}"
+        </li>
+      )}
+      <li>
+        <span className="text-[var(--text-muted)]">Destination:</span> {explanation.destination}
+      </li>
+      {explanation.priority != null && (
+        <li>
+          <span className="text-[var(--text-muted)]">Rule priority:</span> {explanation.priority}
+        </li>
+      )}
+    </ul>
+  );
+}
 
 const ACTION_META = {
   moved: { label: "Organized", color: "var(--status-good)" },
@@ -90,6 +142,8 @@ export default function ActivityTable({
   selectedIds = null,
   onToggleSelect = null,
 }) {
+  const [expandedId, setExpandedId] = useState(null);
+
   if (!logs.length) {
     return (
       <EmptyState
@@ -104,8 +158,10 @@ export default function ActivityTable({
       {logs.map((log, i) => {
         const meta = ACTION_META[log.action] || { label: log.action, color: "var(--text-muted)" };
         const badge = agentCommandBadge(commandStatusByLogId[log.id]);
+        const expanded = expandedId === log.id;
         return (
-          <div key={log.id} className="flex items-center gap-3 py-3">
+          <div key={log.id} className="py-3">
+          <div className="flex items-center gap-3">
             {selectable && !log.undone && (
               <input
                 type="checkbox"
@@ -181,6 +237,27 @@ export default function ActivityTable({
                   ))}
               </select>
             )}
+            {log.explanation && (
+              <button
+                onClick={() => setExpandedId(expanded ? null : log.id)}
+                aria-expanded={expanded}
+                aria-label={`Why was ${log.final_filename} placed here?`}
+                className="flex shrink-0 items-center gap-0.5 rounded-md px-1.5 py-1 text-xs font-medium text-[var(--text-muted)] hover:bg-[var(--gridline)] hover:text-[var(--text-primary)]"
+              >
+                Why?
+                {expanded ? (
+                  <ChevronUp className="h-3 w-3" />
+                ) : (
+                  <ChevronDown className="h-3 w-3" />
+                )}
+              </button>
+            )}
+          </div>
+          {expanded && log.explanation && (
+            <div className="ml-12 mt-2 rounded-lg border border-[var(--border)] bg-[var(--page)] px-3 py-2">
+              <ExplanationDetails explanation={log.explanation} />
+            </div>
+          )}
           </div>
         );
       })}

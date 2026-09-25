@@ -10,10 +10,12 @@ from reportlab.pdfgen import canvas as pdf_canvas
 from send2trash import send2trash
 
 from automation.file_ops import (
+    build_duplicate_groups_result,
     build_final_name,
     compute_hash,
     is_ignored,
     move_lock as _move_lock,
+    plan_file_organization,
     resolve_destination,
     wait_for_stable_file,
 )
@@ -35,8 +37,10 @@ __all__ = [
     "compute_hash",
     "build_final_name",
     "resolve_destination",
+    "build_duplicate_groups_result",
     "process_file",
     "organize_existing_files",
+    "plan_organize_existing",
     "generate_simulated_download",
     "claim_undoable_log",
     "release_undo_claim",
@@ -64,7 +68,8 @@ def process_file(source_path: Path, db, user: dict) -> Document | None:
     engine = get_rule_engine(db, user["id"], watch_root)
 
     file_size = source_path.stat().st_size
-    category = engine.classify(source_path.name, file_size, file_path=source_path)
+    explanation = engine.classify_explained(source_path.name, file_size, file_path=source_path)
+    category = explanation["destination"]
     dest_folder = watch_root / category
     dest_folder.mkdir(parents=True, exist_ok=True)
 
@@ -91,6 +96,7 @@ def process_file(source_path: Path, db, user: dict) -> Document | None:
                     action=action,
                     file_size=file_size,
                     file_hash=file_hash,
+                    explanation=explanation,
                 ),
             )
             notify("Duplicate Skipped", f"{source_path.name} already exists in {category}", engine.rules)
@@ -140,6 +146,7 @@ def process_file(source_path: Path, db, user: dict) -> Document | None:
             action=action,
             file_size=file_size,
             file_hash=file_hash,
+            explanation=explanation,
         ),
     )
 
@@ -190,6 +197,60 @@ def organize_existing_files(db, user: dict) -> dict:
         "duplicates": duplicates,
         "errors": errors,
     }
+
+
+def plan_organize_existing(db, user: dict) -> list[dict]:
+    """Read-only dry run of organize_existing_files() above -- discovers
+    exactly the same candidate files (same folders via all_watch_folders,
+    same is_ignored()/is_file() filtering, same iteration order) and plans
+    what WOULD happen to each via plan_file_organization() (automation/
+    file_ops.py), without moving, creating, renaming, or deleting
+    anything. One file's plan failing (e.g. it vanished mid-scan) never
+    aborts the rest, mirroring organize_existing_files()'s own per-file
+    error containment.
+
+    Each item also gets a `status` bucket -- "ready", "duplicate",
+    "no_match", or "error" -- built only from the real decision
+    plan_file_organization() returned (resolve_destination()'s own action,
+    or classify_file_explained()'s own match_type == "default"), never
+    fabricated. Never touches _move_lock: nothing here performs a real
+    move, so nothing needs serializing against one."""
+    items: list[dict] = []
+
+    for watch_root in all_watch_folders(user):
+        if not watch_root.exists():
+            continue
+        engine = get_rule_engine(db, user["id"], watch_root)
+        candidates = [p for p in watch_root.iterdir() if p.is_file()]
+        for path in candidates:
+            if is_ignored(path):
+                continue
+            try:
+                plan = plan_file_organization(path, watch_root, engine.rules)
+            except OSError:
+                logger.exception("Failed to plan organization for %s", path)
+                items.append(
+                    {
+                        "filename": path.name,
+                        "source_path": str(path),
+                        "destination_path": None,
+                        "category": None,
+                        "action": "error",
+                        "status": "error",
+                        "explanation": None,
+                        "error": "Couldn't preview this file -- it may be locked or unreadable.",
+                    }
+                )
+                continue
+            if plan["action"] == "duplicate_skipped":
+                status = "duplicate"
+            elif plan["explanation"]["match_type"] == "default":
+                status = "no_match"
+            else:
+                status = "ready"
+            items.append({**plan, "status": status, "error": None})
+
+    return items
 
 
 _SIMULATED_FILE_TEMPLATES = [
