@@ -4,7 +4,19 @@
     {
       "filePath": "Main.xaml",
       "uniqueId": "fc5d6c8b-54be-48dc-9b57-9a48a2229a8c",
-      "type": "process"
+      "type": "process",
+      "input": {
+        "type": "object",
+        "properties": {
+          "in_WatchFolder": {
+            "type": "string"
+          },
+          "in_ActivityLogPath": {
+            "type": "string"
+          }
+        },
+        "required": []
+      }
     }
   ]
 }

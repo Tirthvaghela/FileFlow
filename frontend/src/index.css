@@ -63,10 +63,10 @@
   --sidebar-ring: #2a78d6;
 }
 
-/* "Control Room" -- the app's one and only theme. Dark is forced on via
-   next-themes (see main.jsx); the light :root block above stays inert as a
-   harmless no-JS fallback only. Graphite/charcoal canvas, not pure black --
-   an amber "signal" accent stands in for the generic indigo-glow dark-SaaS
+/* "Control Room" -- the optional dark theme, toggled via the sun/moon
+   button in Header.jsx (next-themes, see main.jsx); light (the :root block
+   above) is the default. Graphite/charcoal canvas, not pure black -- an
+   amber "signal" accent stands in for the generic indigo-glow dark-SaaS
    default. --brand is dedicated to CTAs/focus/nav/logo; --series-* stays a
    separate 8-hue set for charts/category chips so nothing clusters near the
    brand accent. */

@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { Bell, ChevronDown, Download, FileText, Search, SlidersHorizontal } from "lucide-react";
+import { useTheme } from "next-themes";
+import { Bell, ChevronDown, Download, FileText, Menu, Moon, Search, SlidersHorizontal, Sun } from "lucide-react";
 import { agentInstallerUrl, getLogs, simulateDownloadUrl } from "../services/api.js";
 import { useRules } from "../context/RulesContext.jsx";
+import { useSidebar } from "../context/SidebarContext.jsx";
 import { useLiveLogs } from "../hooks/useLiveLogs.js";
 import { buildCategoryColorMap, categoryBadge } from "../utils/categoryMeta.js";
 import { actionText, relativeTime } from "../utils/activity.js";
@@ -65,6 +67,8 @@ function fileResults(logs, query) {
 export default function Header({ title, subtitle }) {
   const navigate = useNavigate();
   const { rules } = useRules();
+  const { toggle: toggleSidebar } = useSidebar();
+  const { theme, setTheme } = useTheme();
   // Header owns its own live connection so the bell/status dot is accurate
   // on every page, not just the ones that happen to render an activity feed.
   const { logs: notifLogs, connected } = useLiveLogs(20);
@@ -173,15 +177,33 @@ export default function Header({ title, subtitle }) {
   }
 
   return (
-    <header className="sticky top-0 z-10 flex items-center justify-between gap-6 border-b border-[var(--border)] bg-[var(--page)] px-8 py-5">
-      <div>
-        <h1 className="text-2xl font-semibold text-[var(--text-primary)]">{title}</h1>
-        {subtitle && (
-          <p className="mt-0.5 text-sm text-[var(--text-muted)]">{subtitle}</p>
-        )}
+    <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-[var(--border)] bg-[var(--page)] px-4 py-5 sm:px-8">
+      <div className="flex min-w-0 items-center gap-3">
+        <button
+          type="button"
+          onClick={toggleSidebar}
+          aria-label="Open menu"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--gridline)] lg:hidden"
+        >
+          <Menu width={17} height={17} />
+        </button>
+        <div className="min-w-0">
+          <h1 className="truncate text-xl font-semibold text-[var(--text-primary)] sm:text-2xl">{title}</h1>
+          {subtitle && (
+            <p className="mt-0.5 hidden text-sm text-[var(--text-muted)] sm:block">{subtitle}</p>
+          )}
+        </div>
       </div>
 
       <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+          aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--gridline)]"
+        >
+          {theme === "dark" ? <Sun width={17} height={17} /> : <Moon width={17} height={17} />}
+        </button>
         {toast && (
           <span className="hidden text-xs text-[var(--text-secondary)] lg:inline">
             {toast}

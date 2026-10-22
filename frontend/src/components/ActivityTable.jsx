@@ -161,7 +161,11 @@ export default function ActivityTable({
         const expanded = expandedId === log.id;
         return (
           <div key={log.id} className="py-3">
-          <div className="flex items-center gap-3">
+          {/* flex-wrap: on a narrow viewport, the filename takes its own
+              full-width row first (basis-full), then the timestamp/badge/
+              actions wrap onto their own line below it rather than forcing
+              this row -- and the whole page -- wider than the viewport. */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             {selectable && !log.undone && (
               <input
                 type="checkbox"
@@ -173,7 +177,7 @@ export default function ActivityTable({
             )}
             {selectable && log.undone && <span className="w-4 shrink-0" />}
             <FileBadge log={log} />
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 flex-1 basis-full sm:basis-0">
               <div className="truncate text-sm font-medium text-[var(--text-primary)]">
                 {log.final_filename}
               </div>
@@ -183,7 +187,7 @@ export default function ActivityTable({
               </div>
             </div>
             <span
-              className="text-xs text-[var(--text-muted)]"
+              className="shrink-0 text-xs text-[var(--text-muted)]"
               style={{ fontVariantNumeric: "tabular-nums" }}
             >
               {relativeTime(log.timestamp)}
