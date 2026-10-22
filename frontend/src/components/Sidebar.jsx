@@ -10,12 +10,14 @@ import {
   LayoutGrid,
   Settings,
   SlidersHorizontal,
+  X,
 } from "lucide-react";
 import { Switch } from "./ui/switch.jsx";
 import { formatBytes } from "../utils/categoryMeta.js";
 import { getStats } from "../services/api.js";
 import { useRules } from "../context/RulesContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
+import { useSidebar } from "../context/SidebarContext.jsx";
 
 const links = [
   { to: "/app", label: "Dashboard", end: true, Icon: LayoutGrid },
@@ -30,6 +32,7 @@ const links = [
 export default function Sidebar() {
   const { rules, saveRules } = useRules();
   const { user, logout } = useAuth();
+  const { open, close } = useSidebar();
   const [storageSaved, setStorageSaved] = useState(0);
   const watchFolder = user?.watch_folder || "";
 
@@ -55,7 +58,22 @@ export default function Sidebar() {
   const folderLabel = watchFolder ? watchFolder.split(/[\\/]/).slice(-2).join("/") : "…";
 
   return (
-    <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col justify-between border-r border-[var(--border)] bg-[var(--surface-1)] z-10">
+    <>
+      {/* Backdrop: mobile/tablet only, and only while the drawer is open --
+          lg: and up the sidebar is always visible so there's nothing to
+          dim behind. */}
+      {open && (
+        <div
+          role="presentation"
+          onClick={close}
+          className="fixed inset-0 z-30 bg-black/40 lg:hidden"
+        />
+      )}
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 flex h-screen w-64 shrink-0 flex-col justify-between border-r border-[var(--border)] bg-[var(--surface-1)] transition-transform duration-200 ease-out lg:sticky lg:top-0 lg:translate-x-0 ${
+          open ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
       <div>
         <div className="flex items-center gap-2.5 px-5 py-5">
           <motion.span
@@ -71,6 +89,14 @@ export default function Sidebar() {
             </div>
             <div className="text-xs text-[var(--text-muted)]">RPA Organizer</div>
           </div>
+          <button
+            type="button"
+            onClick={close}
+            aria-label="Close menu"
+            className="ml-auto flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--gridline)] hover:text-[var(--text-primary)] lg:hidden"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
 
         <nav className="flex flex-col gap-1 px-3">
@@ -79,6 +105,7 @@ export default function Sidebar() {
               key={to}
               to={to}
               end={end}
+              onClick={close}
               className="relative z-0"
             >
               {({ isActive }) => (
@@ -191,6 +218,7 @@ export default function Sidebar() {
           </div>
         </div>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 }
