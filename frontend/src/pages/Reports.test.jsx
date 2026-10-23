@@ -28,6 +28,7 @@ vi.mock("../services/api.js", () => ({
   agentInstallerUrl: vi.fn(() => "/api/agent-installer"),
   simulateDownloadUrl: vi.fn(() => "/api/simulate-download"),
   wsUrl: vi.fn(() => "ws://localhost/ws"),
+  getOrganizationHealth: vi.fn().mockResolvedValue({ agent_connected: false }),
 }));
 
 vi.mock("../context/RulesContext.jsx", () => ({

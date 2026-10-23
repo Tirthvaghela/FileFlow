@@ -1,13 +1,13 @@
 import { Link } from "react-router-dom";
-import { AlertTriangle, HeartPulse } from "lucide-react";
-import { Button } from "./button.jsx";
+import Stamp from "./Stamp.jsx";
+import Kicker from "../Kicker.jsx";
 import { formatBytes } from "../../utils/categoryMeta.js";
 
 function plural(n, noun) {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
-function formatUpdatedAt(iso) {
+export function formatUpdatedAt(iso) {
   try {
     return new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   } catch {
@@ -15,14 +15,29 @@ function formatUpdatedAt(iso) {
   }
 }
 
+// Header controls for the health view: "Updated 6:44" + Refresh. Rendered
+// inside the panel when standalone, or in the dialog header when the
+// panel is shown from the Dashboard's "Organization health" tile.
+export function HealthHeaderControls({ data, loading, refreshing, onRefresh }) {
+  return (
+    <div className="flex shrink-0 items-center gap-2.5">
+      {data?.generated_at && (
+        <span className="font-mono-data text-[11px] text-[var(--ink-muted)]">
+          Updated {formatUpdatedAt(data.generated_at) ?? "just now"}
+        </span>
+      )}
+      <button type="button" onClick={onRefresh} disabled={loading || refreshing} className="ff-btn ff-btn-tertiary ff-btn-sm">
+        {refreshing ? "Refreshing…" : "Refresh"}
+      </button>
+    </div>
+  );
+}
+
 // A compact, deterministic overview of FileFlow's existing capabilities --
 // classification coverage, duplicate groups, rule conflicts, and recent
-// activity. Every number here is read straight from GET
-// /api/health/organization (backend/services/health_service.py), which
-// only ever aggregates Features 1-7's own already-computed results. This
-// component never calls AI, never triggers a duplicate/rule scan itself,
-// and never offers a destructive action -- it only links to the existing
-// features that already do those things.
+// activity. Every number is read straight from GET /api/health/organization.
+// This component never calls AI, never triggers a scan itself, and never
+// offers a destructive action -- it only links to the features that do.
 export default function HealthDashboard({
   data,
   loading,
@@ -31,62 +46,62 @@ export default function HealthDashboard({
   onRefresh,
   onReviewUnclassified,
   onReviewDuplicates,
+  headerless = false,
 }) {
   return (
-    <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-1)]/80 backdrop-blur p-5 shadow-sm">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <HeartPulse className="h-4 w-4 text-[var(--brand)]" />
-          <h2 className="text-sm font-medium text-[var(--text-primary)]">FileFlow Health</h2>
-          {data?.generated_at && (
-            <span className="text-xs text-[var(--text-muted)]">
-              Updated {formatUpdatedAt(data.generated_at) ?? "just now"}
-            </span>
-          )}
+    <div className="flex flex-col gap-3">
+      {!headerless && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="ff-caps m-0 text-[15px]">FileFlow Health</h2>
+          <HealthHeaderControls data={data} loading={loading} refreshing={refreshing} onRefresh={onRefresh} />
         </div>
-        <Button
-          variant="outline"
-          onClick={onRefresh}
-          disabled={loading || refreshing}
-          className="!px-3 !py-1.5 !text-xs"
-        >
-          {refreshing ? "Refreshing…" : "Refresh"}
-        </Button>
-      </div>
-
-      {loading && !data && (
-        <p className="py-6 text-center text-sm text-[var(--text-muted)]">Loading workspace health…</p>
       )}
 
+      {loading && !data && <p className="py-6 text-center text-sm text-[var(--ink-muted)]">Loading workspace health…</p>}
+
       {error && (
-        <div className="flex items-start gap-2 rounded-lg bg-[var(--status-critical)]/10 px-3 py-2 text-xs font-medium text-[var(--status-critical)]">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{error}</span>
+        <div role="alert" className="rounded-[4px] border-[1.5px] border-dashed border-[var(--stamp)] p-3.5 text-[13px] text-[var(--stamp)]">
+          {error}
         </div>
       )}
 
       {data && !error && (
-        <HealthSections
-          data={data}
-          onReviewUnclassified={onReviewUnclassified}
-          onReviewDuplicates={onReviewDuplicates}
-        />
+        <HealthSections data={data} onReviewUnclassified={onReviewUnclassified} onReviewDuplicates={onReviewDuplicates} />
       )}
     </div>
   );
 }
 
-function SectionCard({ title, children }) {
+function ActionButton({ children, onClick, to }) {
+  if (to) {
+    return (
+      <Link to={to} className="ff-btn ff-btn-outline ff-btn-sm no-underline">
+        {children}
+      </Link>
+    );
+  }
   return (
-    <div className="rounded-xl border border-[var(--border)] p-3">
-      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">{title}</h3>
+    <button type="button" onClick={onClick} className="ff-btn ff-btn-outline ff-btn-sm">
       {children}
-    </div>
+    </button>
   );
 }
 
-function Unavailable({ message }) {
-  return <p className="text-xs text-[var(--text-muted)]">{message || "Not available right now."}</p>;
+function CheckRow({ stamp, tone, title, children, action }) {
+  return (
+    <li className="flex flex-wrap items-center gap-x-3.5 gap-y-2 border-b border-dashed border-[var(--rule-2)] py-3">
+      <span className="flex w-[84px] shrink-0 justify-center">
+        <Stamp tone={tone} size="lg" className="w-[84px]">
+          {stamp}
+        </Stamp>
+      </span>
+      <span className="flex min-w-0 flex-[1_1_240px] flex-col gap-0.5">
+        <b className="text-[13.5px]">{title}</b>
+        <span className="text-[12.5px] text-[var(--ink-2)]">{children}</span>
+      </span>
+      {action}
+    </li>
+  );
 }
 
 function HealthSections({ data, onReviewUnclassified, onReviewDuplicates }) {
@@ -94,169 +109,110 @@ function HealthSections({ data, onReviewUnclassified, onReviewDuplicates }) {
 
   const needsAttention = [];
   if (files.status === "available" && files.unclassified > 0) {
-    needsAttention.push({
-      key: "unclassified",
-      label: `${plural(files.unclassified, "unclassified file")}`,
-      actionLabel: "Review Unclassified",
-      onClick: onReviewUnclassified,
-    });
+    needsAttention.push(plural(files.unclassified, "unclassified file"));
   }
   if (files.status === "available" && files.errors > 0) {
-    needsAttention.push({
-      key: "errors",
-      label: `${plural(files.errors, "file")} couldn't be read during the last scan`,
-    });
+    needsAttention.push(`${plural(files.errors, "file")} couldn't be read during the last scan`);
   }
   if (rules.status === "available" && rules.conflicts_total > 0) {
-    needsAttention.push({
-      key: "conflicts",
-      label:
-        rules.conflicts_high > 0
-          ? `${plural(rules.conflicts_total, "rule conflict")} (${rules.conflicts_high} high severity)`
-          : plural(rules.conflicts_total, "rule conflict"),
-      actionLabel: "Review Rules",
-      to: "/app/rules",
-    });
+    needsAttention.push(
+      rules.conflicts_high > 0
+        ? `${plural(rules.conflicts_total, "rule conflict")} (${rules.conflicts_high} high severity)`
+        : plural(rules.conflicts_total, "rule conflict"),
+    );
   }
   if (duplicates.status === "available" && duplicates.groups > 0) {
-    needsAttention.push({
-      key: "duplicates",
-      label: plural(duplicates.groups, "duplicate group"),
-      actionLabel: "Review Duplicates",
-      onClick: onReviewDuplicates,
-    });
+    needsAttention.push(plural(duplicates.groups, "duplicate group"));
   }
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <SectionCard title="Classification">
-          {files.status === "unavailable" ? (
-            <Unavailable message={files.message} />
-          ) : (
-            <>
-              <div className="mb-2 h-1.5 overflow-hidden rounded-full bg-[var(--gridline)]">
-                <div
-                  className="h-full rounded-full bg-[var(--brand)]"
-                  style={{ width: `${files.classification_coverage_percent ?? 0}%` }}
-                />
-              </div>
-              <p className="text-sm font-semibold text-[var(--text-primary)]">
-                {files.classification_coverage_percent != null
-                  ? `${files.classification_coverage_percent}% classified`
-                  : "No eligible files yet"}
-              </p>
-              <p className="mt-1 text-xs text-[var(--text-muted)]">
-                {plural(files.classified, "classified file")}, {plural(files.unclassified, "unclassified file")}
-                {files.errors > 0 && `, ${plural(files.errors, "error")}`}
-              </p>
-              <button
-                type="button"
-                onClick={onReviewUnclassified}
-                className="mt-2 text-xs font-medium text-[var(--brand)] hover:underline"
-              >
-                Review Unclassified
-              </button>
-            </>
-          )}
-        </SectionCard>
-
-        <SectionCard title="Duplicates">
-          {duplicates.status === "unavailable" ? (
-            <Unavailable message={duplicates.message} />
-          ) : (
-            <>
-              <p className="text-sm font-semibold text-[var(--text-primary)]">
-                {plural(duplicates.groups, "group")}
-              </p>
-              <p className="mt-1 text-xs text-[var(--text-muted)]">
-                {plural(duplicates.duplicate_files, "duplicate file")} ·{" "}
-                {formatBytes(duplicates.potential_redundant_bytes)} potentially redundant
-              </p>
-              <button
-                type="button"
-                onClick={onReviewDuplicates}
-                className="mt-2 text-xs font-medium text-[var(--brand)] hover:underline"
-              >
-                Review Duplicates
-              </button>
-            </>
-          )}
-        </SectionCard>
-
-        <SectionCard title="Rules">
-          {rules.status === "unavailable" ? (
-            <Unavailable message={rules.message} />
-          ) : (
-            <>
-              <p className="text-sm font-semibold text-[var(--text-primary)]">
-                {plural(rules.active, "active rule")}
-              </p>
-              <p className="mt-1 text-xs text-[var(--text-muted)]">
-                {rules.disabled > 0 && `${plural(rules.disabled, "disabled rule")} · `}
-                {rules.conflicts_total > 0
-                  ? plural(rules.conflicts_total, "conflict")
-                  : "No conflicts detected"}
-              </p>
-              <Link to="/app/rules" className="mt-2 inline-block text-xs font-medium text-[var(--brand)] hover:underline">
-                Review Rules
-              </Link>
-            </>
-          )}
-        </SectionCard>
-
-        <SectionCard title="Recent Organization">
-          {activity.status === "unavailable" ? (
-            <Unavailable message={activity.message} />
-          ) : (
-            <>
-              <p className="text-sm font-semibold text-[var(--text-primary)]">
-                {activity.last_7_days.organized} organized (7d)
-              </p>
-              <p className="mt-1 text-xs text-[var(--text-muted)]">
-                {activity.last_24_hours.organized} today · {activity.last_7_days.skipped} skipped (7d)
-              </p>
-              <Link
-                to="/app/activity"
-                className="mt-2 inline-block text-xs font-medium text-[var(--brand)] hover:underline"
-              >
-                View History
-              </Link>
-            </>
-          )}
-        </SectionCard>
-      </div>
-
+    <div className="flex flex-col gap-3">
       {needsAttention.length > 0 && (
-        <div className="rounded-xl border border-[var(--status-warning)]/30 bg-[var(--status-warning)]/5 p-3">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--status-warning)]">
-            Needs Attention
-          </h3>
-          <ul className="space-y-1.5">
-            {needsAttention.map((item) => (
-              <li key={item.key} className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                <span className="text-[var(--text-secondary)]">
-                  <span aria-hidden="true">⚠</span> {item.label}
-                </span>
-                {item.to && (
-                  <Link to={item.to} className="font-medium text-[var(--brand)] hover:underline">
-                    {item.actionLabel}
-                  </Link>
-                )}
-                {item.onClick && (
-                  <button
-                    type="button"
-                    onClick={item.onClick}
-                    className="font-medium text-[var(--brand)] hover:underline"
-                  >
-                    {item.actionLabel}
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
+        <div className="flex flex-col gap-1.5 rounded-[4px] border-l-[3px] border-[var(--warn)] bg-[var(--sheet-2)] px-3 py-2.5">
+          <span className="ff-kicker">Needs attention</span>
+          <span className="text-[12.5px] text-[var(--ink-2)]">{needsAttention.join(" · ")}</span>
         </div>
       )}
+
+      <Kicker>Checks</Kicker>
+      <ol className="m-0 flex list-none flex-col p-0">
+        {files.status === "unavailable" ? (
+          <CheckRow stamp="N/A" tone="muted" title="Classification">
+            {files.message || "Not available right now."}
+          </CheckRow>
+        ) : (
+          <CheckRow
+            stamp={files.unclassified > 0 ? "Review" : "OK"}
+            tone={files.unclassified > 0 ? "warn" : "ok"}
+            title={
+              files.classification_coverage_percent != null
+                ? `${files.classification_coverage_percent}% classified`
+                : "No eligible files yet"
+            }
+            action={<ActionButton onClick={onReviewUnclassified}>Review Unclassified</ActionButton>}
+          >
+            {plural(files.classified, "classified file")}, {plural(files.unclassified, "unclassified file")}
+            {files.errors > 0 && `, ${plural(files.errors, "error")}`}
+          </CheckRow>
+        )}
+
+        {duplicates.status === "unavailable" ? (
+          <CheckRow stamp="N/A" tone="muted" title="Duplicates">
+            {duplicates.message || "Not available right now."}
+          </CheckRow>
+        ) : (
+          <CheckRow
+            stamp={duplicates.groups > 0 ? "Review" : "OK"}
+            tone={duplicates.groups > 0 ? "warn" : "ok"}
+            title={plural(duplicates.groups, "group")}
+            action={<ActionButton onClick={onReviewDuplicates}>Review Duplicates</ActionButton>}
+          >
+            {plural(duplicates.duplicate_files, "duplicate file")} · {formatBytes(duplicates.potential_redundant_bytes)}{" "}
+            potentially redundant
+          </CheckRow>
+        )}
+
+        {rules.status === "unavailable" ? (
+          <CheckRow stamp="N/A" tone="muted" title="Rules">
+            {rules.message || "Not available right now."}
+          </CheckRow>
+        ) : (
+          <CheckRow
+            stamp={rules.conflicts_total > 0 ? "Conflict" : "OK"}
+            tone={rules.conflicts_total > 0 ? "error" : "ok"}
+            title={plural(rules.active, "active rule")}
+            action={<ActionButton to="/app/rules">Review Rules</ActionButton>}
+          >
+            {rules.disabled > 0 && `${plural(rules.disabled, "disabled rule")} · `}
+            {rules.conflicts_total > 0 ? plural(rules.conflicts_total, "conflict") : "No conflicts detected"}
+          </CheckRow>
+        )}
+
+        {activity.status === "unavailable" ? (
+          <CheckRow stamp="N/A" tone="muted" title="Recent organization">
+            {activity.message || "Not available right now."}
+          </CheckRow>
+        ) : (
+          <CheckRow
+            stamp="Logged"
+            tone="ink"
+            title={`${activity.last_7_days.organized} organized (7d)`}
+            action={<ActionButton to="/app/activity">View History</ActionButton>}
+          >
+            {activity.last_24_hours.organized} today · {activity.last_7_days.skipped} skipped (7d)
+          </CheckRow>
+        )}
+
+        <CheckRow
+          stamp={data.agent_connected ? "Online" : "Local"}
+          tone={data.agent_connected ? "ok" : "muted"}
+          title={data.agent_connected ? "Remote agent connected" : "No remote agent"}
+        >
+          {data.agent_connected
+            ? "Files are sorted on your own PC; some checks run there."
+            : "FileFlow is sorting the folder on this server."}
+        </CheckRow>
+      </ol>
     </div>
   );
 }

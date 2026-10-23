@@ -88,9 +88,9 @@ export function AuthProvider({ children }) {
     return nextUser;
   }
 
-  async function register(email, password) {
+  async function register(email, password, name) {
     const id = ++requestIdRef.current;
-    const nextUser = await registerApi(email, password);
+    const nextUser = await registerApi(email, password, name);
     if (requestIdRef.current === id) {
       setUser(nextUser);
       setLoading(false);

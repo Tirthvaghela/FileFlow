@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AnimatePresence, motion } from "motion/react";
 import { useTheme } from "next-themes";
-import { Bell, ChevronDown, Download, FileText, Menu, Moon, Search, SlidersHorizontal, Sun } from "lucide-react";
-import { agentInstallerUrl, getLogs, simulateDownloadUrl } from "../services/api.js";
+import { Bell, ChevronDown, Download, Moon, Search, Sun } from "lucide-react";
+import BrandMark from "./BrandMark.jsx";
+import FileBadge from "./FileBadge.jsx";
+import { agentInstallerUrl, getLogs, getOrganizationHealth, simulateDownloadUrl } from "../services/api.js";
 import { useRules } from "../context/RulesContext.jsx";
-import { useSidebar } from "../context/SidebarContext.jsx";
+import { useAuth } from "../context/AuthContext.jsx";
 import { useLiveLogs } from "../hooks/useLiveLogs.js";
-import { buildCategoryColorMap, categoryBadge } from "../utils/categoryMeta.js";
 import { actionText, relativeTime } from "../utils/activity.js";
 
 const MAX_RESULTS_PER_GROUP = 5;
@@ -24,26 +24,19 @@ function ruleResults(rules, query) {
   ];
   for (const [ext, folder] of extEntries) {
     if (ext.toLowerCase().includes(q) || folder.toLowerCase().includes(q)) {
-      results.push({ id: `ext-${ext}`, label: ext, sublabel: `→ ${folder}` });
+      results.push({ id: `ext-${ext}`, label: ext, sublabel: folder });
     }
   }
 
-  const keywordEntries = [
-    ...(rules.keyword_rules || []),
-    ...(rules.disabled_keyword_rules || []),
-  ];
+  const keywordEntries = [...(rules.keyword_rules || []), ...(rules.disabled_keyword_rules || [])];
   for (const r of keywordEntries) {
     if (r.keyword.toLowerCase().includes(q) || r.folder.toLowerCase().includes(q)) {
-      results.push({ id: `kw-${r.keyword}`, label: r.keyword, sublabel: `→ ${r.folder}` });
+      results.push({ id: `kw-${r.keyword}-${r.folder}`, label: r.keyword, sublabel: r.folder });
     }
   }
 
   if (rules.large_file_folder && rules.large_file_folder.toLowerCase().includes(q)) {
-    results.push({
-      id: "size-rule",
-      label: `> ${rules.large_file_threshold_mb} MB`,
-      sublabel: `→ ${rules.large_file_folder}`,
-    });
+    results.push({ id: "size-rule", label: `> ${rules.large_file_threshold_mb} MB`, sublabel: rules.large_file_folder });
   }
 
   return results.slice(0, MAX_RESULTS_PER_GROUP);
@@ -57,393 +50,394 @@ function fileResults(logs, query) {
     if (seen.has(log.final_filename)) continue;
     if (log.final_filename.toLowerCase().includes(q)) {
       seen.add(log.final_filename);
-      results.push({ id: `log-${log.id}`, label: log.final_filename, sublabel: `→ ${log.category}` });
+      results.push({ id: `log-${log.id}`, label: log.final_filename, sublabel: log.category });
       if (results.length >= MAX_RESULTS_PER_GROUP) break;
     }
   }
   return results;
 }
 
-export default function Header({ title, subtitle }) {
+// Header control: 34px tall, 1px --rule-2 border, --sheet bg, 12px semibold.
+const CHIP =
+  "flex h-[34px] shrink-0 items-center gap-2 whitespace-nowrap rounded-[4px] border border-[var(--rule-2)] bg-[var(--sheet)] px-3 text-[12px] font-semibold text-[var(--ink)] transition-colors hover:border-[var(--ink)]";
+
+const MENU =
+  "ff-pop absolute right-0 top-[40px] z-30 overflow-hidden rounded-[4px] border border-[var(--rule-2)] bg-[var(--sheet)] text-[var(--ink)] shadow-[0_18px_40px_-16px_var(--shade)]";
+
+const MENU_ITEM =
+  "flex w-full flex-col items-start gap-0.5 border-none bg-transparent px-3.5 py-3 text-left hover:bg-[var(--sheet-2)]";
+
+export default function Header() {
   const navigate = useNavigate();
-  const { rules } = useRules();
-  const { toggle: toggleSidebar } = useSidebar();
+  const { rules, saveRules } = useRules();
+  const { user, logout } = useAuth();
   const { theme, setTheme } = useTheme();
-  // Header owns its own live connection so the bell/status dot is accurate
-  // on every page, not just the ones that happen to render an activity feed.
   const { logs: notifLogs, connected } = useLiveLogs(20);
   const [toast, setToast] = useState("");
   const [query, setQuery] = useState("");
-  const [open, setOpen] = useState(false);
+  // Which popover is open: "search" | "notif" | "download" | "account" | null
+  const [menu, setMenu] = useState(null);
   const [logs, setLogs] = useState([]);
   const [logsLoaded, setLogsLoaded] = useState(false);
-  const [notifOpen, setNotifOpen] = useState(false);
-  const [downloadOpen, setDownloadOpen] = useState(false);
   const [lastSeenId, setLastSeenId] = useState(null);
-  const wrapRef = useRef(null);
-  const notifRef = useRef(null);
-  const downloadRef = useRef(null);
+  const [agentConnected, setAgentConnected] = useState(null);
+  const controlsRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getOrganizationHealth()
+      .then((h) => {
+        if (!cancelled) setAgentConnected(h.agent_connected);
+      })
+      .catch(() => {
+        if (!cancelled) setAgentConnected(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     function handleClickOutside(e) {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
-        setOpen(false);
-      }
-      if (notifRef.current && !notifRef.current.contains(e.target)) {
-        setNotifOpen(false);
-      }
-      if (downloadRef.current && !downloadRef.current.contains(e.target)) {
-        setDownloadOpen(false);
-      }
+      if (controlsRef.current && !controlsRef.current.contains(e.target)) setMenu(null);
+    }
+    function handleKey(e) {
+      if (e.key === "Escape") setMenu(null);
     }
     document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKey);
+    };
   }, []);
 
-  // Baseline "seen" marker so pre-existing history isn't counted as unread
-  // the moment the page loads -- only entries that arrive after that count.
   useEffect(() => {
-    if (lastSeenId === null && notifLogs.length > 0) {
-      setLastSeenId(notifLogs[0].id);
-    }
+    if (lastSeenId === null && notifLogs.length > 0) setLastSeenId(notifLogs[0].id);
   }, [notifLogs, lastSeenId]);
 
   const unreadCount = lastSeenId === null ? 0 : notifLogs.filter((l) => l.id > lastSeenId).length;
-  // "Live" must mean automation is actually watching for new files, not
-  // just that the browser has a socket open -- the socket stays connected
-  // even while the user has paused monitoring from the sidebar toggle.
   const monitoring = rules?.realtime_monitoring_enabled ?? true;
   const isLive = connected && monitoring;
-  const statusLabel = !connected ? "Disconnected" : monitoring ? "Live" : "Paused";
-  const notifColorMap = useMemo(
-    () => buildCategoryColorMap(notifLogs.map((l) => l.category)),
-    [notifLogs],
-  );
+  const dark = theme === "dark";
+  const initials = (user?.email?.[0] || "?").toUpperCase();
 
-  function toggleNotifications() {
-    setNotifOpen((v) => {
-      const next = !v;
-      if (next && notifLogs.length > 0) setLastSeenId(notifLogs[0].id);
+  async function toggleAutomation() {
+    if (!rules) return;
+    try {
+      await saveRules((current) => ({
+        ...current,
+        realtime_monitoring_enabled: !current.realtime_monitoring_enabled,
+      }));
+    } catch {
+      // saveRules already rolled the shared state back on failure
+    }
+  }
+
+  function openMenu(name) {
+    setMenu((current) => {
+      const next = current === name ? null : name;
+      if (next === "notif" && notifLogs.length > 0) setLastSeenId(notifLogs[0].id);
+      if (next === "search" && !logsLoaded) {
+        setLogsLoaded(true);
+        getLogs(200).then(setLogs).catch(() => {});
+      }
       return next;
     });
   }
 
-  function ensureLogsLoaded() {
-    if (logsLoaded) return;
-    setLogsLoaded(true);
-    getLogs(200)
-      .then(setLogs)
-      .catch(() => {});
-  }
-
   const files = useMemo(() => (query.trim() ? fileResults(logs, query.trim()) : []), [logs, query]);
-  const ruleMatches = useMemo(
-    () => (query.trim() ? ruleResults(rules, query.trim()) : []),
-    [rules, query],
-  );
+  const ruleMatches = useMemo(() => (query.trim() ? ruleResults(rules, query.trim()) : []), [rules, query]);
   const hasResults = files.length > 0 || ruleMatches.length > 0;
 
   function goTo(path) {
-    setOpen(false);
+    setMenu(null);
     setQuery("");
     navigate(path);
   }
 
-  function handleSimulate() {
-    // A genuine browser download (not a JSON call) -- it lands wherever
-    // the browser saves downloads, typically the same folder FileFlow is
-    // already watching, so the real pipeline picks it up naturally.
+  function triggerDownload(url, message) {
     const link = document.createElement("a");
-    link.href = simulateDownloadUrl();
+    link.href = url;
     link.rel = "noopener";
     document.body.appendChild(link);
     link.click();
     link.remove();
-    setToast("Demo file downloading — FileFlow will pick it up once it lands.");
-    setTimeout(() => setToast(""), 4000);
-  }
-
-  function handleAgentDownload() {
-    // Same genuine-browser-download pattern as handleSimulate, just
-    // pointed at the real installer instead of a demo file.
-    const link = document.createElement("a");
-    link.href = agentInstallerUrl();
-    link.rel = "noopener";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setToast("Downloading FileFlow Agent — run the installer once it lands.");
+    setToast(message);
     setTimeout(() => setToast(""), 4000);
   }
 
   return (
-    <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-[var(--border)] bg-[var(--page)] px-4 py-5 sm:px-8">
-      <div className="flex min-w-0 items-center gap-3">
-        <button
-          type="button"
-          onClick={toggleSidebar}
-          aria-label="Open menu"
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--gridline)] lg:hidden"
-        >
-          <Menu width={17} height={17} />
-        </button>
-        <div className="min-w-0">
-          <h1 className="truncate text-xl font-semibold text-[var(--text-primary)] sm:text-2xl">{title}</h1>
-          {subtitle && (
-            <p className="mt-0.5 hidden text-sm text-[var(--text-muted)] sm:block">{subtitle}</p>
-          )}
-        </div>
+    <header className="mx-auto flex max-w-[1360px] flex-nowrap items-center gap-3 px-4 pt-[18px] sm:gap-4 sm:px-6">
+      <div className="flex shrink-0 items-center gap-2.5">
+        <BrandMark />
+        <span className="hidden text-[16px] font-extrabold tracking-[0.06em] sm:inline" style={{ fontStretch: "125%" }}>
+          FILEFLOW
+        </span>
       </div>
 
-      <div className="flex items-center gap-3">
+      <div title="Watched folder" className="hidden min-w-0 flex-[1_1_260px] items-center gap-2 sm:flex">
+        <span className="ff-kicker hidden text-[10px] md:inline">Watching</span>
+        <code className="min-w-0 truncate rounded-[3px] border border-[var(--rule-2)] bg-[var(--sheet)] px-2 py-1 font-mono-data text-[12px] font-medium shadow-[inset_0_1px_2px_var(--shade)]">
+          {user?.watch_folder || "Not configured"}
+        </code>
+      </div>
+
+      <div ref={controlsRef} className="relative ml-auto flex flex-none items-center gap-2 whitespace-nowrap">
         <button
           type="button"
-          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-          aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--gridline)]"
+          role="switch"
+          aria-checked={monitoring}
+          aria-label={`Real-time monitoring: ${monitoring ? "active" : "paused"}`}
+          title="Real-time monitoring"
+          onClick={toggleAutomation}
+          className={`${CHIP} pl-1.5 pr-1.5 sm:pr-2.5`}
         >
-          {theme === "dark" ? <Sun width={17} height={17} /> : <Moon width={17} height={17} />}
+          <span
+            className="flex h-5 w-[34px] p-[2px] transition-colors"
+            style={{ borderRadius: 3, background: monitoring ? "var(--filed)" : "var(--rule-2)", justifyContent: monitoring ? "flex-end" : "flex-start" }}
+          >
+            <span className="h-4 w-4 bg-[var(--sheet)] shadow-[0_1px_2px_var(--shade)]" style={{ borderRadius: 2 }} />
+          </span>
+          <span className="hidden sm:inline">Auto-sort {monitoring ? "on" : "off"}</span>
         </button>
+
+        <span
+          title={agentConnected === true ? "Agent connected" : agentConnected === false ? "Agent not connected" : "Agent status unknown"}
+          className={`${CHIP} hidden cursor-default hover:border-[var(--rule-2)] md:flex`}
+          style={{ color: agentConnected === true ? "var(--filed)" : "var(--ink-muted)" }}
+        >
+          <span
+            className="h-2 w-2 rounded-full"
+            style={{ background: agentConnected === true ? "var(--filed)" : "var(--ink-muted)" }}
+          />
+          <span className="hidden xl:inline">
+            {agentConnected === true ? "Agent connected" : agentConnected === false ? "Agent offline" : "Agent unknown"}
+          </span>
+        </span>
+
+        <button
+          type="button"
+          onClick={() => setTheme(dark ? "light" : "dark")}
+          aria-label={dark ? "Switch to light theme" : "Switch to dark theme"}
+          className={`${CHIP} px-2.5 xl:px-3`}
+        >
+          {dark ? <Sun width={14} height={14} /> : <Moon width={14} height={14} fill="currentColor" />}
+          <span className="hidden xl:inline">{dark ? "Day" : "Night"}</span>
+        </button>
+
         {toast && (
-          <span className="hidden text-xs text-[var(--text-secondary)] lg:inline">
+          <span role="status" className="hidden max-w-[200px] truncate text-xs text-[var(--ink-2)] xl:inline">
             {toast}
           </span>
         )}
 
-        <div ref={wrapRef} className="relative hidden md:block">
-          <Search
-            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"
-            width={16}
-            height={16}
-          />
-          <input
-            type="text"
-            value={query}
-            onFocus={() => {
-              ensureLogsLoaded();
-              setOpen(true);
-            }}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setOpen(true);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                setOpen(false);
-                e.currentTarget.blur();
-              }
-              if (e.key === "Enter" && query.trim()) {
-                goTo(`/app/activity?q=${encodeURIComponent(query.trim())}`);
-              }
-            }}
-            placeholder="Search files, rules..."
-            className="w-56 rounded-lg border border-[var(--border)] bg-[var(--surface-1)] py-2 pl-9 pr-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/30"
-          />
+        <button
+          type="button"
+          aria-label="Search files and rules"
+          aria-expanded={menu === "search"}
+          onClick={() => openMenu("search")}
+          className={`${CHIP} hidden px-2.5 sm:flex`}
+        >
+          <Search width={14} height={14} />
+        </button>
 
-          <AnimatePresence>
-          {open && query.trim() && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.96, y: -4 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.96, y: -4 }}
-              transition={{ duration: 0.15, ease: "easeOut" }}
-              style={{ transformOrigin: "top right" }}
-              className="absolute right-0 top-[calc(100%+6px)] z-20 w-80 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-1)] shadow-lg"
+        <button
+          type="button"
+          aria-label="Notifications"
+          aria-expanded={menu === "notif"}
+          onClick={() => openMenu("notif")}
+          className={`${CHIP} hidden px-2.5 sm:flex`}
+        >
+          <Bell width={14} height={14} />
+          {unreadCount > 0 && (
+            <span className="grid h-4 min-w-4 place-items-center rounded-full bg-[var(--stamp)] px-1 text-[9px] font-bold text-white">
+              {unreadCount > 9 ? "9+" : unreadCount}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          aria-expanded={menu === "download"}
+          aria-label="Downloads"
+          onClick={() => openMenu("download")}
+          className="flex h-[34px] shrink-0 items-center gap-1.5 rounded-[4px] border-none bg-[var(--ink)] px-3 text-[12px] font-semibold text-[var(--paper)]"
+        >
+          <Download width={13} height={13} className="sm:hidden" />
+          <span className="hidden sm:inline">Downloads</span>
+          <ChevronDown width={12} height={12} />
+        </button>
+
+        <button
+          type="button"
+          onClick={logout}
+          title={`${user?.email || ""} · Sign out`}
+          className={`${CHIP} hidden bg-transparent px-2.5 lg:flex`}
+        >
+          <span className="grid h-[22px] w-[22px] place-items-center rounded-full bg-[var(--manila)] text-[11px] font-bold text-[var(--manila-ink)]">
+            {initials}
+          </span>
+          Sign out
+        </button>
+
+        <button
+          type="button"
+          aria-label="Account menu"
+          aria-expanded={menu === "account"}
+          onClick={() => openMenu("account")}
+          className="grid h-[34px] w-[34px] shrink-0 place-items-center rounded-[4px] border border-[var(--rule-2)] bg-transparent lg:hidden"
+        >
+          <span className="grid h-[22px] w-[22px] place-items-center rounded-full bg-[var(--manila)] text-[11px] font-bold text-[var(--manila-ink)]">
+            {initials}
+          </span>
+        </button>
+
+        {menu === "account" && (
+          <div role="menu" className={`${MENU} w-[250px]`}>
+            {user?.email && (
+              <div className="border-b border-dashed border-[var(--rule-2)] px-3.5 py-2.5 font-mono-data text-[11.5px] text-[var(--ink-muted)]">
+                {user.email}
+              </div>
+            )}
+            <button type="button" role="menuitem" className={`${MENU_ITEM} sm:hidden`} onClick={() => openMenu("search")}>
+              <b className="text-[13px]">Search files and rules</b>
+            </button>
+            <button type="button" role="menuitem" className={`${MENU_ITEM} sm:hidden`} onClick={() => openMenu("notif")}>
+              <b className="text-[13px]">Notifications{unreadCount > 0 ? ` (${unreadCount})` : ""}</b>
+            </button>
+            <button type="button" role="menuitem" className={MENU_ITEM} onClick={logout}>
+              <b className="text-[13px] text-[var(--stamp)]">Sign out</b>
+            </button>
+          </div>
+        )}
+
+        {menu === "download" && (
+          <div role="menu" className={`${MENU} w-[290px] max-w-[calc(100vw-32px)]`}>
+            <button
+              type="button"
+              role="menuitem"
+              className={MENU_ITEM}
+              onClick={() => {
+                setMenu(null);
+                triggerDownload(simulateDownloadUrl(), "Demo file downloading — FileFlow will pick it up once it lands.");
+              }}
             >
-              {!hasResults ? (
-                <p className="px-4 py-6 text-center text-xs text-[var(--text-muted)]">
-                  No matches for "{query.trim()}"
-                </p>
+              <b className="text-[13px]">Simulate a download</b>
+              <span className="text-[12px] text-[var(--ink-muted)]">Drops a demo file into the watched folder</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className={`${MENU_ITEM} border-t border-dashed border-[var(--rule-2)]`}
+              onClick={() => {
+                setMenu(null);
+                triggerDownload(agentInstallerUrl(), "Downloading FileFlow Agent — run the installer once it lands.");
+              }}
+            >
+              <b className="text-[13px]">FileFlow Agent for Windows</b>
+              <span className="text-[12px] text-[var(--ink-muted)]">Sorts a folder on your own PC</span>
+            </button>
+          </div>
+        )}
+
+        {menu === "search" && (
+          <div className={`${MENU} w-[320px] max-w-[calc(100vw-32px)]`}>
+            <input
+              autoFocus
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && query.trim()) goTo(`/app/activity?q=${encodeURIComponent(query.trim())}`);
+              }}
+              placeholder="Search files, rules…"
+              aria-label="Search files and rules"
+              className="w-full border-0 border-b border-[var(--rule)] bg-transparent px-3.5 py-3 font-mono-data text-[12.5px] focus:outline-none"
+            />
+            {query.trim() &&
+              (!hasResults ? (
+                <p className="px-4 py-6 text-center text-xs text-[var(--ink-muted)]">No matches for “{query.trim()}”</p>
               ) : (
                 <>
                   {files.length > 0 && (
-                    <div className="border-b border-[var(--border)] py-1.5">
-                      <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
-                        Files
-                      </p>
+                    <div className="border-b border-[var(--rule)] py-1.5">
+                      <p className="ff-kicker px-3.5 pb-1">Files</p>
                       {files.map((r) => (
                         <button
                           key={r.id}
+                          type="button"
                           onClick={() => goTo(`/app/activity?q=${encodeURIComponent(r.label)}`)}
-                          className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm hover:bg-[var(--gridline)]"
+                          className="flex w-full items-center gap-2.5 border-none bg-transparent px-3.5 py-2 text-left hover:bg-[var(--sheet-2)]"
                         >
-                          <FileText width={14} height={14} className="shrink-0 text-[var(--text-muted)]" />
-                          <span className="min-w-0 flex-1 truncate text-[var(--text-primary)]">{r.label}</span>
-                          <span className="shrink-0 text-xs text-[var(--text-muted)]">{r.sublabel}</span>
+                          <span className="min-w-0 flex-1 truncate font-mono-data text-[12px]">{r.label}</span>
+                          <span className="shrink-0 font-mono-data text-[11px] text-[var(--ink-muted)]">→ {r.sublabel}</span>
                         </button>
                       ))}
                     </div>
                   )}
                   {ruleMatches.length > 0 && (
                     <div className="py-1.5">
-                      <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
-                        Rules
-                      </p>
+                      <p className="ff-kicker px-3.5 pb-1">Rules</p>
                       {ruleMatches.map((r) => (
                         <button
                           key={r.id}
+                          type="button"
                           onClick={() => goTo("/app/rules")}
-                          className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm hover:bg-[var(--gridline)]"
+                          className="flex w-full items-center gap-2.5 border-none bg-transparent px-3.5 py-2 text-left hover:bg-[var(--sheet-2)]"
                         >
-                          <SlidersHorizontal width={14} height={14} className="shrink-0 text-[var(--text-muted)]" />
-                          <span className="min-w-0 flex-1 truncate text-[var(--text-primary)]">{r.label}</span>
-                          <span className="shrink-0 text-xs text-[var(--text-muted)]">{r.sublabel}</span>
+                          <span className="min-w-0 flex-1 truncate font-mono-data text-[12px] font-semibold">{r.label}</span>
+                          <span className="shrink-0 font-mono-data text-[11px] text-[var(--ink-muted)]">→ {r.sublabel}</span>
                         </button>
                       ))}
                     </div>
                   )}
                 </>
-              )}
-            </motion.div>
-          )}
-          </AnimatePresence>
-        </div>
+              ))}
+          </div>
+        )}
 
-        <div ref={downloadRef} className="relative">
-          <button
-            onClick={() => setDownloadOpen((v) => !v)}
-            className="flex items-center gap-2 rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-medium text-[var(--brand-foreground)] hover:opacity-90"
-          >
-            <Download width={16} height={16} />
-            Downloads
-            <ChevronDown width={14} height={14} />
-          </button>
-
-          <AnimatePresence>
-          {downloadOpen && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.96, y: -4 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.96, y: -4 }}
-              transition={{ duration: 0.15, ease: "easeOut" }}
-              style={{ transformOrigin: "top right" }}
-              className="absolute right-0 top-[calc(100%+6px)] z-20 w-72 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-1)] shadow-lg"
-            >
-              <button
-                onClick={() => {
-                  setDownloadOpen(false);
-                  handleSimulate();
-                }}
-                className="flex w-full flex-col items-start gap-0.5 px-4 py-2.5 text-left hover:bg-[var(--gridline)]"
-              >
-                <span className="text-sm font-medium text-[var(--text-primary)]">
-                  Simulate a download
-                </span>
-                <span className="text-xs text-[var(--text-muted)]">
-                  Drop a demo file to test the pipeline
-                </span>
-              </button>
-              <button
-                onClick={() => {
-                  setDownloadOpen(false);
-                  handleAgentDownload();
-                }}
-                className="flex w-full flex-col items-start gap-0.5 border-t border-[var(--border)] px-4 py-2.5 text-left hover:bg-[var(--gridline)]"
-              >
-                <span className="text-sm font-medium text-[var(--text-primary)]">
-                  FileFlow Agent (.exe)
-                </span>
-                <span className="text-xs text-[var(--text-muted)]">
-                  Windows installer — watches your own machine's folder
-                </span>
-              </button>
-            </motion.div>
-          )}
-          </AnimatePresence>
-        </div>
-
-        <div ref={notifRef} className="relative">
-          <button
-            onClick={toggleNotifications}
-            className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--gridline)]"
-            aria-label="Notifications"
-          >
-            <Bell width={17} height={17} />
-            {unreadCount > 0 ? (
-              <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--status-critical)] px-1 text-[10px] font-semibold text-white">
-                {unreadCount > 9 ? "9+" : unreadCount}
+        {menu === "notif" && (
+          <div className={`${MENU} w-[320px] max-w-[calc(100vw-32px)]`}>
+            <div className="flex items-center justify-between border-b border-[var(--rule)] px-3.5 py-2.5">
+              <span className="ff-kicker">Notifications</span>
+              <span className="font-mono-data text-[11px]" style={{ color: isLive ? "var(--filed)" : "var(--ink-muted)" }}>
+                {!connected ? "disconnected" : monitoring ? "live" : "paused"}
               </span>
+            </div>
+            {notifLogs.length === 0 ? (
+              <p className="px-4 py-6 text-center text-xs text-[var(--ink-muted)]">
+                No activity yet — drop a file into the watched folder to see it here.
+              </p>
             ) : (
-              <span
-                className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full"
-                style={{ background: isLive ? "var(--status-good)" : "var(--text-muted)" }}
-              />
-            )}
-          </button>
-
-          <AnimatePresence>
-          {notifOpen && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.96, y: -4 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.96, y: -4 }}
-              transition={{ duration: 0.15, ease: "easeOut" }}
-              style={{ transformOrigin: "top right" }}
-              className="absolute right-0 top-[calc(100%+6px)] z-20 w-80 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-1)] shadow-lg"
-            >
-              <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
-                <span className="text-sm font-semibold text-[var(--text-primary)]">
-                  Notifications
-                </span>
-                <span
-                  className="text-xs"
-                  style={{ color: isLive ? "var(--status-good)" : "var(--text-muted)" }}
-                >
-                  {statusLabel}
-                </span>
+              <div className="max-h-80 overflow-y-auto py-1">
+                {notifLogs.slice(0, MAX_NOTIFICATIONS).map((log) => (
+                  <button
+                    key={log.id}
+                    type="button"
+                    onClick={() => goTo(`/app/activity?q=${encodeURIComponent(log.final_filename)}`)}
+                    className="flex w-full items-center gap-2.5 border-none bg-transparent px-3.5 py-2 text-left hover:bg-[var(--sheet-2)]"
+                  >
+                    <FileBadge filename={log.final_filename} size="xs" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-mono-data text-[12px]">{log.final_filename}</span>
+                      <span className="block text-[11.5px] text-[var(--ink-muted)]">
+                        {actionText(log)} · {relativeTime(log.timestamp)}
+                      </span>
+                    </span>
+                  </button>
+                ))}
               </div>
-              {notifLogs.length === 0 ? (
-                <p className="px-4 py-6 text-center text-xs text-[var(--text-muted)]">
-                  No activity yet — drop a file into the watched folder to see it here.
-                </p>
-              ) : (
-                <div className="max-h-80 overflow-y-auto py-1.5">
-                  {notifLogs.slice(0, MAX_NOTIFICATIONS).map((log) => {
-                    const color = notifColorMap[log.category] || "var(--series-1)";
-                    return (
-                      <button
-                        key={log.id}
-                        onClick={() => {
-                          setNotifOpen(false);
-                          navigate(`/app/activity?q=${encodeURIComponent(log.final_filename)}`);
-                        }}
-                        className="flex w-full items-start gap-2.5 px-4 py-2.5 text-left hover:bg-[var(--gridline)]"
-                      >
-                        <span
-                          className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[8px] font-bold tracking-wide"
-                          style={{
-                            color,
-                            background: `color-mix(in srgb, ${color} 14%, transparent)`,
-                          }}
-                        >
-                          {categoryBadge(log.category)}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-sm font-medium text-[var(--text-primary)]">
-                            {log.final_filename}
-                          </span>
-                          <span className="block text-xs text-[var(--text-muted)]">
-                            {actionText(log)} · {relativeTime(log.timestamp)}
-                          </span>
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-              <button
-                onClick={() => {
-                  setNotifOpen(false);
-                  navigate("/app/activity");
-                }}
-                className="block w-full border-t border-[var(--border)] py-2 text-center text-xs font-medium text-[var(--brand)] hover:bg-[var(--gridline)]"
-              >
-                View all activity
-              </button>
-            </motion.div>
-          )}
-          </AnimatePresence>
-        </div>
+            )}
+            <button
+              type="button"
+              onClick={() => goTo("/app/activity")}
+              className="block w-full border-0 border-t border-[var(--rule)] bg-transparent py-2 text-center text-xs font-semibold hover:bg-[var(--sheet-2)]"
+            >
+              View all activity
+            </button>
+          </div>
+        )}
       </div>
     </header>
   );

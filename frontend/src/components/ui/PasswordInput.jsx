@@ -4,7 +4,7 @@ import { Eye, EyeOff } from "lucide-react"
 import { Input } from "./input.jsx"
 import { cn } from "@/lib/utils"
 
-function PasswordInput({ className, ...props }) {
+function PasswordInput({ className, showText = false, ...props }) {
   const [visible, setVisible] = React.useState(false)
 
   return (
@@ -20,9 +20,15 @@ function PasswordInput({ className, ...props }) {
         tabIndex={-1}
         aria-label={visible ? "Hide password" : "Show password"}
         aria-pressed={visible}
-        className="absolute inset-y-0 right-0 flex items-center px-2.5 text-muted-foreground transition-colors hover:text-foreground"
+        className={`absolute inset-y-0 right-0 flex items-center px-2.5 text-muted-foreground transition-colors hover:text-foreground ${showText ? "auth-password-toggle" : ""}`}
       >
-        {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+        {showText ? (
+          visible ? "Hide" : "Show"
+        ) : visible ? (
+          <EyeOff className="h-4 w-4" />
+        ) : (
+          <Eye className="h-4 w-4" />
+        )}
       </button>
     </div>
   );

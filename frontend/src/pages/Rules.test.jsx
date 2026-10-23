@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Rules from "./Rules.jsx";
@@ -47,6 +47,7 @@ vi.mock("../services/api.js", () => ({
   agentInstallerUrl: vi.fn(() => "/api/agent-installer"),
   simulateDownloadUrl: vi.fn(() => "/api/simulate-download"),
   wsUrl: vi.fn(() => "ws://localhost/ws"),
+  getOrganizationHealth: vi.fn().mockResolvedValue({ agent_connected: false }),
 }));
 
 const mockSaveRules = vi.fn();
@@ -62,11 +63,19 @@ function renderRules() {
   );
 }
 
+// The new-rule form opens inline from "+ New rule".
+function openNewRuleForm() {
+  if (!screen.queryByRole("form", { name: /new rule/i })) {
+    fireEvent.click(screen.getByRole("button", { name: /\+ new rule/i }));
+  }
+}
+
 function fillAndSubmitRegexRule(pattern, folder) {
-  fireEvent.change(screen.getByLabelText(/condition type/i), { target: { value: "regex" } });
+  openNewRuleForm();
+  fireEvent.change(screen.getByLabelText(/rule type/i), { target: { value: "regex" } });
   fireEvent.change(screen.getByLabelText(/regex pattern/i), { target: { value: pattern } });
   fireEvent.change(screen.getByLabelText(/destination folder/i), { target: { value: folder } });
-  fireEvent.click(screen.getByRole("button", { name: /add rule/i }));
+  fireEvent.click(screen.getByRole("button", { name: /^save rule$/i }));
 }
 
 describe("Rules page: add-rule failure handling", () => {
@@ -83,7 +92,7 @@ describe("Rules page: add-rule failure handling", () => {
     // The condition-type dropdown must still say "regex" -- if the whole
     // form silently reset to its "extension" default despite the save
     // failing, the "Regex pattern" label below wouldn't even exist anymore.
-    expect(screen.getByLabelText(/condition type/i).value).toBe("regex");
+    expect(screen.getByLabelText(/rule type/i).value).toBe("regex");
     expect(screen.getByLabelText(/regex pattern/i).value).toBe("(a+)+$");
     expect(screen.getByLabelText(/destination folder/i).value).toBe("Camera");
   });
@@ -96,10 +105,11 @@ describe("Rules page: add-rule failure handling", () => {
 
     await waitFor(() => expect(screen.getByText(/^saved$/i)).toBeInTheDocument());
 
-    // A successful add resets the whole form back to its default, including
-    // the condition-type dropdown -- "Regex pattern" reverts to "Match" and
-    // the destination folder is empty again.
-    expect(screen.getByLabelText(/condition type/i).value).toBe("extension");
+    // A successful add closes the inline form; reopening it starts from the
+    // defaults -- "Regex pattern" reverts to "Match", the folder is empty.
+    expect(screen.queryByRole("form", { name: /new rule/i })).not.toBeInTheDocument();
+    openNewRuleForm();
+    expect(screen.getByLabelText(/rule type/i).value).toBe("extension");
     expect(screen.getByLabelText(/^match$/i).value).toBe("");
     expect(screen.getByLabelText(/destination folder/i).value).toBe("");
   });
@@ -118,7 +128,7 @@ describe("Rules page: AI Rule Generator", () => {
 
   async function openAIDialog() {
     renderRules();
-    fireEvent.click(screen.getByRole("button", { name: /create with ai/i }));
+    fireEvent.click(screen.getByRole("button", { name: /generate with ai/i }));
   }
 
   async function generate(text) {
@@ -210,13 +220,13 @@ describe("Rules page: AI Rule Generator", () => {
     // panel) now carries the proposal's fields -- nothing has been saved
     // yet, the user still has to press the existing "Add rule" button.
     await waitFor(() => expect(screen.queryByText(/create rule with ai/i)).not.toBeInTheDocument());
-    expect(screen.getByLabelText(/condition type/i).value).toBe("keyword");
+    expect(screen.getByLabelText(/rule type/i).value).toBe("keyword");
     expect(screen.getByLabelText(/^match$/i).value).toBe("gstinvoice");
     expect(screen.getByLabelText(/destination folder/i).value).toBe("Finance/Invoices");
     expect(mockSaveRules).not.toHaveBeenCalled();
 
     mockSaveRules.mockResolvedValueOnce({ ...baseRules });
-    fireEvent.click(screen.getByRole("button", { name: /add rule/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^save rule$/i }));
     await waitFor(() => expect(mockSaveRules).toHaveBeenCalledTimes(1));
   });
 
@@ -344,8 +354,12 @@ describe("Rules page: rule conflict detector", () => {
       fireEvent.click(screen.getByRole("button", { name: /check conflicts/i }));
 
       expect(await screen.findByText(/1 potential overlap/i)).toBeInTheDocument();
-      expect(screen.getByText(/Keyword "invoice"\s+vs\.\s+Extension "\.pdf"/)).toBeInTheDocument();
-      expect(screen.getByText("invoice.pdf")).toBeInTheDocument();
+      const item = screen.getByText(/Keyword "invoice"\s+vs\.\s+Extension "\.pdf"/);
+      expect(item).toBeInTheDocument();
+      // The full card (example + reasoning) opens in the Conflicts dialog.
+      fireEvent.click(item);
+      expect(await screen.findByText("invoice.pdf")).toBeInTheDocument();
+      expect(screen.getByText(/Keyword rules are evaluated before extension rules/)).toBeInTheDocument();
     });
 
     it("surfaces a request failure distinctly", async () => {
@@ -493,7 +507,7 @@ describe("Rules page: rule conflict detector", () => {
 
     async function openAndGenerate() {
       renderRules();
-      fireEvent.click(screen.getByRole("button", { name: /create with ai/i }));
+      fireEvent.click(screen.getByRole("button", { name: /generate with ai/i }));
       fireEvent.change(screen.getByPlaceholderText(/put invoices containing gst/i), {
         target: { value: "Put GST invoices into Finance/Invoices" },
       });
@@ -541,5 +555,55 @@ describe("Rules page: rule conflict detector", () => {
       await waitFor(() => expect(mockSaveRules).toHaveBeenCalledTimes(1));
       await waitFor(() => expect(screen.queryByText(/create rule with ai/i)).not.toBeInTheDocument());
     });
+  });
+});
+
+describe("Rules page: v5 layout", () => {
+  beforeEach(() => {
+    mockSaveRules.mockReset();
+  });
+
+  it("opens the inline form preset to a tier from its dashed Add card", () => {
+    renderRules();
+    expect(screen.queryByRole("form", { name: /new rule/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /add a regex rule/i }));
+    expect(screen.getByLabelText(/rule type/i).value).toBe("regex");
+    expect(screen.getByText(/joins tier 2/i)).toBeInTheDocument();
+  });
+
+  it("validates inline instead of silently ignoring an empty rule", () => {
+    renderRules();
+    fireEvent.click(screen.getByRole("button", { name: /\+ new rule/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^save rule$/i }));
+    expect(screen.getByRole("alert")).toHaveTextContent(/enter match/i);
+    expect(mockSaveRules).not.toHaveBeenCalled();
+  });
+
+  it("precedence tester stops at the first matching tier for a sample file", () => {
+    renderRules();
+    const tester = screen.getByRole("complementary", { name: /precedence tester/i });
+    fireEvent.change(within(tester).getByLabelText(/try a filename/i), { target: { value: "invoice_2026.py" } });
+    // Keyword "invoice" (tier 01) wins over extension .py (tier 04).
+    expect(within(tester).getByText("✓ decides").closest("li")).toHaveTextContent(/Keyword/);
+    expect(within(tester).getByText(/would match Python Projects/)).toBeInTheDocument();
+  });
+
+  it("shows unrecognized-type options as switches, not checkboxes", () => {
+    renderRules();
+    expect(screen.getByRole("switch", { name: /auto-create a folder/i })).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: /timestamp prefix/i })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+
+  it("edits a rule in place through the same save path", async () => {
+    mockSaveRules.mockResolvedValueOnce({ ...baseRules });
+    renderRules();
+    fireEvent.click(screen.getByRole("button", { name: /edit rule "invoice"/i }));
+    expect(screen.getByLabelText(/^match$/i).value).toBe("invoice");
+    fireEvent.change(screen.getByLabelText(/destination folder/i), { target: { value: "Finance/Bills" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save rule$/i }));
+    await waitFor(() => expect(mockSaveRules).toHaveBeenCalledTimes(1));
+    const next = mockSaveRules.mock.calls[0][0](baseRules);
+    expect(next.keyword_rules).toEqual([{ keyword: "invoice", folder: "Finance/Bills" }]);
   });
 });

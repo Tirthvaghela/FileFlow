@@ -1,21 +1,40 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { motion } from "motion/react";
-import Header from "../components/Header.jsx";
-import EmptyState from "../components/EmptyState.jsx";
-import { Activity, Search } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation, useSearchParams } from "react-router-dom";
+import PageHeading from "../components/PageHeading.jsx";
+import Kicker from "../components/Kicker.jsx";
+import ActivityTable from "../components/ActivityTable.jsx";
+import RecentAgentActivity from "../components/RecentAgentActivity.jsx";
 import { useLiveLogs } from "../hooks/useLiveLogs.js";
-import { buildCategoryColorMap, categoryBadge } from "../utils/categoryMeta.js";
-import { actionText, relativeTime } from "../utils/activity.js";
-import { gsap, useGSAP } from "../lib/gsap.js";
+import { useCommandStatusByLogId } from "../hooks/useCommandStatusByLogId.js";
+import { reclassifyLog, undoLog } from "../services/api.js";
+import { collectKnownFolders } from "../utils/categoryMeta.js";
+import { useRules } from "../context/RulesContext.jsx";
+
+// Action filters -- what actually happened to the file.
+const FILTERS = {
+  All: () => true,
+  Filed: (l) => !l.undone && ["moved", "renamed_and_moved", "replaced"].includes(l.action),
+  Duplicates: (l) => !l.undone && l.action === "duplicate_skipped",
+  Archived: (l) => !l.undone && l.action === "archived",
+  Undone: (l) => l.undone,
+};
 
 export default function ActivityLog() {
-  const { logs } = useLiveLogs(200);
+  const { logs, refresh } = useLiveLogs(200);
+  const { commandStatusByLogId, refreshCommandStatus } = useCommandStatusByLogId();
+  const { rules } = useRules();
+  const location = useLocation();
   const [filter, setFilter] = useState("All");
+  const [folder, setFolder] = useState("");
   const [searchParams, setSearchParams] = useSearchParams();
   const [search, setSearch] = useState(searchParams.get("q") || "");
+  const openParam = searchParams.get("open");
+  const openId = openParam ? Number(openParam) : null;
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [undoingId, setUndoingId] = useState(null);
 
-  // Keep the URL in sync so a search landed on via the topbar (or a
+  // Keep the URL in sync so a search landed on via the header (or a
   // bookmark/back-button) reproduces the same filtered view.
   useEffect(() => {
     const next = new URLSearchParams(searchParams);
@@ -25,143 +44,137 @@ export default function ActivityLog() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
-  const categories = useMemo(() => {
-    const seen = new Set(logs.map((l) => l.category));
-    return ["All", ...[...seen].sort((a, b) => a.localeCompare(b))];
-  }, [logs]);
+  useEffect(() => {
+    if (location.hash === "#agent-commands") {
+      document.getElementById("agent-commands")?.scrollIntoView?.({ behavior: "smooth" });
+    }
+  }, [location.hash]);
 
-  const colorMap = useMemo(
-    () => buildCategoryColorMap(logs.map((l) => l.category)),
-    [logs],
-  );
+  const folders = useMemo(() => [...new Set(logs.map((l) => l.category))].sort((a, b) => a.localeCompare(b)), [logs]);
 
   const filtered = logs.filter((l) => {
-    const matchesCategory = filter === "All" || l.category === filter;
-    const matchesSearch = !search.trim() || l.final_filename.toLowerCase().includes(search.trim().toLowerCase());
-    return matchesCategory && matchesSearch;
+    const q = search.trim().toLowerCase();
+    const matchesSearch = !q || l.final_filename.toLowerCase().includes(q) || (l.category || "").toLowerCase().includes(q);
+    return FILTERS[filter](l) && matchesSearch && (!folder || l.category === folder);
   });
 
-  const tbodyRef = useRef(null);
+  const knownFolders = collectKnownFolders(rules);
 
-  // Re-run on every filter/search change so switching categories or typing
-  // a search re-reveals the (new) row set -- a tame fade+lift, never
-  // overshoot easing, which reads as sloppy on dense data rows.
-  useGSAP(
-    () => {
-      if (!tbodyRef.current) return;
-      gsap.from("tr", { opacity: 0, y: 6, stagger: 0.025, duration: 0.25, ease: "power1.out" });
-    },
-    { dependencies: [filtered.length, filter, search], scope: tbodyRef },
-  );
+  async function handleUndoRow(log) {
+    if (undoingId) return;
+    setUndoingId(log.id);
+    setError("");
+    try {
+      const result = await undoLog(log.id);
+      setMessage(result.message);
+      refresh();
+      refreshCommandStatus();
+    } catch {
+      setMessage("");
+      setError("Couldn't undo that operation -- try again.");
+    } finally {
+      setUndoingId(null);
+    }
+  }
+
+  async function handleReclassify(log, category) {
+    setError("");
+    try {
+      const result = await reclassifyLog(log.id, category);
+      setMessage(result.message);
+      refresh();
+      refreshCommandStatus();
+    } catch {
+      setMessage("");
+      setError("Couldn't reclassify that file -- try again.");
+    }
+  }
 
   return (
     <>
-      <Header title="Activity log" subtitle="Every action FileFlow has taken, live" />
-      <div className="p-8">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap gap-2">
-            {categories.map((cat) => {
-              const active = filter === cat;
+      <PageHeading index={2} kicker="Ledger" title="Activity" subtitle="Every action FileFlow has taken, with the reason it was taken." />
+      <div className="ff-in flex flex-col gap-5">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Filter by file name or folder"
+            aria-label="Filter activity"
+            className="ff-input flex-[1_1_260px]"
+          />
+          <div role="radiogroup" aria-label="Action" className="flex flex-wrap gap-1">
+            {Object.keys(FILTERS).map((f) => {
+              const active = filter === f;
               return (
                 <button
-                  key={cat}
-                  onClick={() => setFilter(cat)}
-                  className={`isolate relative rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
-                    active ? "border-transparent text-[var(--brand-foreground)]" : "border-[var(--border)] text-[var(--text-secondary)] bg-[var(--surface-1)]"
-                  }`}
+                  key={f}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => setFilter(f)}
+                  className="h-8 flex-none cursor-pointer whitespace-nowrap rounded-full border px-3 text-[12px] font-semibold transition-colors"
+                  style={{
+                    borderColor: active ? "var(--ink)" : "var(--rule-2)",
+                    background: active ? "var(--ink)" : "var(--sheet)",
+                    color: active ? "var(--paper)" : "var(--ink)",
+                  }}
                 >
-                  {active && (
-                    <motion.span
-                      layoutId="activityFilterPill"
-                      className="absolute inset-0 -z-10 rounded-lg"
-                      style={{ background: "var(--brand)" }}
-                      transition={{ type: "spring", stiffness: 380, damping: 30 }}
-                    />
-                  )}
-                  {cat}
+                  {f}
                 </button>
               );
             })}
           </div>
-          <label className="relative">
-            <Search
-              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"
-              width={15}
-              height={15}
-            />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Filter by filename..."
-              className="w-56 rounded-lg border border-[var(--border)] bg-[var(--surface-1)] py-2 pl-9 pr-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/30"
-            />
-          </label>
-        </div>
-
-        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] shadow-sm">
-          {filtered.length === 0 ? (
-            <EmptyState
-              icon={Activity}
-              message="No activity yet — drop a file into the watched folder to see it here."
-            />
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-sm">
-                <thead>
-                  <tr className="border-b border-[var(--border)] text-left text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
-                    <th className="px-5 py-3 font-medium">File</th>
-                    <th className="px-5 py-3 font-medium">Action</th>
-                    <th className="px-5 py-3 text-right font-medium">Time</th>
-                  </tr>
-                </thead>
-                <tbody ref={tbodyRef}>
-                  {filtered.map((log) => {
-                    const color = colorMap[log.category] || "var(--series-1)";
-                    return (
-                      <tr
-                        key={log.id}
-                        className="border-b border-[var(--border)] last:border-b-0 transition-colors hover:bg-[var(--gridline)]/40"
-                      >
-                        <td className="px-5 py-3">
-                          <div className="flex items-center gap-3">
-                            <span
-                              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[9px] font-bold tracking-wide"
-                              style={{
-                                color,
-                                background: `color-mix(in srgb, ${color} 14%, transparent)`,
-                              }}
-                            >
-                              {categoryBadge(log.category)}
-                            </span>
-                            <span
-                              className={`truncate font-mono font-medium ${
-                                log.undone
-                                  ? "text-[var(--text-muted)] line-through"
-                                  : "text-[var(--text-primary)]"
-                              }`}
-                            >
-                              {log.final_filename}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-5 py-3 text-[var(--text-secondary)]">
-                          {log.undone ? "Undone" : actionText(log)}
-                        </td>
-                        <td
-                          className="px-5 py-3 text-right text-[var(--text-muted)]"
-                          style={{ fontVariantNumeric: "tabular-nums" }}
-                        >
-                          {relativeTime(log.timestamp)}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+          {folders.length > 1 && (
+            <select
+              value={folder}
+              onChange={(e) => setFolder(e.target.value)}
+              aria-label="Filter by folder"
+              className="ff-input h-8 max-w-[180px]"
+            >
+              <option value="">Folder: all</option>
+              {folders.map((f) => (
+                <option key={f} value={f}>
+                  {f}
+                </option>
+              ))}
+            </select>
           )}
         </div>
+
+        {error && (
+          <p role="alert" className="m-0 rounded-[4px] bg-[var(--stamp-bg)] px-3 py-2 text-[12.5px] font-medium text-[var(--stamp)]">
+            {error}
+          </p>
+        )}
+        {message && (
+          <p role="status" className="m-0 rounded-[4px] bg-[var(--filed-bg)] px-3 py-2 text-[12.5px] font-medium text-[var(--filed)]">
+            {message}
+          </p>
+        )}
+
+        <ActivityTable
+          logs={filtered}
+          showStatusBadge
+          commandStatusByLogId={commandStatusByLogId}
+          onUndo={handleUndoRow}
+          undoingId={undoingId}
+          allowAnyRowUndo
+          onReclassify={handleReclassify}
+          categories={knownFolders}
+          openId={openId}
+          emptyMessage={
+            logs.length === 0
+              ? "No activity yet — drop a file into the watched folder to see it here."
+              : "No entries match. Try another filter or clear the search."
+          }
+        />
+
+        <section id="agent-commands" aria-label="Agent commands" className="mt-2 flex scroll-mt-4 flex-col gap-2.5">
+          <Kicker>Agent commands</Kicker>
+          <p className="m-0 text-[12.5px] text-[var(--ink-muted)]">Undo and reclassify requests sent to the remote agent on your PC.</p>
+          <RecentAgentActivity />
+        </section>
       </div>
     </>
   );

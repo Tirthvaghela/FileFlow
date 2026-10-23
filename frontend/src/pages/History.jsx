@@ -1,18 +1,30 @@
-import Header from "../components/Header.jsx";
-import ActivityTable from "../components/ActivityTable.jsx";
-import { CheckCircle2, RotateCcw, Undo2, X } from "lucide-react";
-import { motion, AnimatePresence } from "motion/react";
+import { Fragment, useMemo, useState } from "react";
+import PageHeading from "../components/PageHeading.jsx";
+import ExplanationPanel from "../components/ExplanationPanel.jsx";
+import Stamp from "../components/ui/Stamp.jsx";
+import FolderTag from "../components/ui/FolderTag.jsx";
 import { useLiveLogs } from "../hooks/useLiveLogs.js";
 import { useCommandStatusByLogId } from "../hooks/useCommandStatusByLogId.js";
 import { reclassifyLog, undoLastOperation, undoLog } from "../services/api.js";
 import { collectKnownFolders } from "../utils/categoryMeta.js";
+import { dayHeading, folderName, operationTitle, stampFor, UNDOABLE_ACTIONS } from "../utils/activity.js";
 import { useRules } from "../context/RulesContext.jsx";
-import { useMemo, useState } from "react";
 
-// Mirrors the backend's UNDOABLE_ACTIONS -- only these rows can actually be
-// undone, so "select all" and bulk-undo both skip anything else silently
-// rather than firing a request that can only ever fail.
-const UNDOABLE_ACTIONS = ["moved", "renamed_and_moved", "replaced", "archived", "reclassified"];
+const DOT = {
+  filed: "var(--filed)",
+  duplicate: "var(--warn)",
+  archived: "var(--ink-2)",
+  refiled: "var(--ink)",
+  undone: "var(--rule-2)",
+  error: "var(--stamp)",
+};
+
+function agentLabel(command) {
+  if (!command) return null;
+  if (command.status === "pending") return { label: "Waiting for agent…", tone: "warn" };
+  if (command.success === false) return { label: "Failed", tone: "error" };
+  return { label: "Completed", tone: "ok" };
+}
 
 export default function History() {
   const { logs, refresh } = useLiveLogs(100);
@@ -24,11 +36,11 @@ export default function History() {
   const [undoingLast, setUndoingLast] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [whyId, setWhyId] = useState(null);
 
   async function handleUndoLast() {
-    // Same reasoning as Dashboard's handleUndo: the backend only guards two
-    // calls racing on the *same* undo, so an unguarded second click here
-    // would undo the next operation back too, not just retry the first.
+    // The backend only guards two calls racing on the *same* undo, so an
+    // unguarded second click here would undo the next operation back too.
     if (undoingLast) return;
     setUndoingLast(true);
     setError("");
@@ -105,7 +117,7 @@ export default function History() {
       setMessage(
         succeeded === targets.length
           ? `Undid ${succeeded} operation${succeeded === 1 ? "" : "s"}.`
-          : `Undid ${succeeded} of ${targets.length} selected (${targets.length - succeeded} failed).`
+          : `Undid ${succeeded} of ${targets.length} selected (${targets.length - succeeded} failed).`,
       );
       clearSelection();
       refresh();
@@ -117,9 +129,7 @@ export default function History() {
 
   async function handleBulkReclassify(category) {
     if (!category) return;
-    const targets = logs.filter(
-      (l) => selectedIds.has(l.id) && l.destination_path && !l.undone && l.category !== category
-    );
+    const targets = logs.filter((l) => selectedIds.has(l.id) && l.destination_path && !l.undone && l.category !== category);
     if (!targets.length || bulkBusy) return;
     setBulkBusy(true);
     try {
@@ -128,7 +138,7 @@ export default function History() {
       setMessage(
         succeeded === targets.length
           ? `Moved ${succeeded} file${succeeded === 1 ? "" : "s"} to ${category}.`
-          : `Moved ${succeeded} of ${targets.length} selected (${targets.length - succeeded} failed).`
+          : `Moved ${succeeded} of ${targets.length} selected (${targets.length - succeeded} failed).`,
       );
       clearSelection();
       refresh();
@@ -141,153 +151,219 @@ export default function History() {
   const knownFolders = collectKnownFolders(rules);
   const undoneCount = logs.filter((l) => l.undone).length;
   const activeCount = logs.length - undoneCount;
-  const selectedUndoableCount = logs.filter(
-    (l) => selectedIds.has(l.id) && UNDOABLE_ACTIONS.includes(l.action)
-  ).length;
+  const selectedUndoableCount = logs.filter((l) => selectedIds.has(l.id) && UNDOABLE_ACTIONS.includes(l.action)).length;
+  const hasSelection = selectedIds.size > 0;
+
+  const groups = useMemo(() => {
+    const out = [];
+    for (const log of logs) {
+      const key = new Date(log.timestamp).toDateString();
+      const last = out[out.length - 1];
+      if (last && last.key === key) last.items.push(log);
+      else out.push({ key, heading: dayHeading(log.timestamp), items: [log] });
+    }
+    return out;
+  }, [logs]);
 
   return (
     <>
-      <Header title="History" subtitle="Reversible operation timeline" />
-      <div className="p-8">
-        <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-2">
-          {[
-            { label: "Still in place", value: activeCount, icon: CheckCircle2, color: "var(--status-good)" },
-            { label: "Undone", value: undoneCount, icon: RotateCcw, color: "var(--text-muted)" },
-          ].map((stat, i) => (
-            <motion.div
-              key={stat.label}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.35, delay: i * 0.06, ease: "easeOut" }}
-              className="flex items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-4 shadow-sm"
-            >
-              <span
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
-                style={{ color: stat.color, background: `color-mix(in srgb, ${stat.color} 14%, transparent)` }}
+      <PageHeading index={3} kicker="Timeline" title="History" subtitle="Reversible operations, newest first. Undo or refile anything." />
+      <div className="ff-in flex flex-col gap-[18px]">
+        <div
+          className="sticky top-0 z-[5] flex flex-wrap items-center gap-2.5 rounded-[4px] px-3 py-2.5 transition-colors"
+          style={{
+            background: hasSelection ? "var(--ink)" : "var(--sheet-2)",
+            color: hasSelection ? "var(--paper)" : "var(--ink)",
+            transitionDuration: "var(--d2)",
+          }}
+        >
+          {logs.length > 0 && (
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={toggleSelectAll}
+              disabled={selectableLogs.length === 0}
+              aria-label="Select all"
+              className="h-[18px] w-[18px]"
+              style={{ accentColor: hasSelection ? "var(--paper)" : "var(--ink)" }}
+            />
+          )}
+          {hasSelection ? (
+            <>
+              <span className="text-[13px] font-semibold">{selectedIds.size} selected</span>
+              <select
+                value=""
+                onChange={(e) => handleBulkReclassify(e.target.value)}
+                disabled={bulkBusy}
+                aria-label="Move selected to"
+                className="ff-input h-8 max-w-[170px] text-[12px]"
               >
-                <stat.icon className="h-[18px] w-[18px]" />
-              </span>
-              <div>
-                <div className="text-lg font-semibold text-[var(--text-primary)]">{stat.value}</div>
-                <div className="text-xs text-[var(--text-muted)]">{stat.label}</div>
-              </div>
-            </motion.div>
-          ))}
+                <option value="">Move selected to…</option>
+                {knownFolders.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleBulkUndo}
+                disabled={bulkBusy || selectedUndoableCount === 0}
+                className="ff-btn ff-btn-sm border-none bg-[var(--paper)] font-bold text-[var(--ink)]"
+              >
+                Undo selected ({selectedUndoableCount})
+              </button>
+              <button type="button" onClick={clearSelection} className="ff-btn ff-btn-sm border border-[var(--ink-muted)] bg-transparent text-[var(--paper)]">
+                Clear
+              </button>
+            </>
+          ) : (
+            <span className="text-[13px]">
+              <b className="font-semibold">
+                {activeCount} still in place · {undoneCount} undone
+              </b>
+              <span className="text-[var(--ink-muted)]"> · Select operations to undo several at once</span>
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={handleUndoLast}
+            disabled={undoingLast}
+            className={`ff-btn ff-btn-sm ml-auto ${hasSelection ? "border border-[var(--paper)] bg-transparent text-[var(--paper)]" : "ff-btn-outline"}`}
+          >
+            {undoingLast ? "Undoing…" : "Undo last operation"}
+          </button>
         </div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.35, delay: 0.1, ease: "easeOut" }}
-          className="rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-5 shadow-sm"
-        >
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <h2 className="text-sm font-medium text-[var(--text-primary)]">
-                Operation history
-              </h2>
-              <p className="text-xs text-[var(--text-muted)]">
-                Every automated action is reversible.
-              </p>
-            </div>
-            <button
-              onClick={handleUndoLast}
-              disabled={undoingLast}
-              className="flex items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--gridline)] disabled:opacity-50"
-            >
-              <Undo2 className="h-3.5 w-3.5" />
-              {undoingLast ? "Undoing…" : "Undo last operation"}
-            </button>
+        {error && (
+          <p role="alert" className="m-0 rounded-[4px] bg-[var(--stamp-bg)] px-3 py-2 text-[12.5px] font-medium text-[var(--stamp)]">
+            {error}
+          </p>
+        )}
+        {message && (
+          <p role="status" className="m-0 rounded-[4px] bg-[var(--filed-bg)] px-3 py-2 text-[12.5px] font-medium text-[var(--filed)]">
+            {message}
+          </p>
+        )}
+
+        {logs.length === 0 && (
+          <div className="py-[30px] text-[13px] text-[var(--ink-muted)]">
+            No operations yet. Moves, archives and refiles appear here and can be undone.
           </div>
+        )}
 
-          {logs.length > 0 && (
-            <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--page)] px-3 py-2 text-xs">
-              <label className="flex items-center gap-2 font-medium text-[var(--text-secondary)]">
-                <input
-                  type="checkbox"
-                  checked={allSelected}
-                  onChange={toggleSelectAll}
-                  className="h-4 w-4 rounded border-[var(--border)] accent-[var(--brand)]"
-                  disabled={selectableLogs.length === 0}
-                />
-                Select all
-              </label>
-              {selectedIds.size > 0 && (
-                <>
-                  <span className="text-[var(--text-muted)]">{selectedIds.size} selected</span>
-                  <button
-                    onClick={handleBulkUndo}
-                    disabled={bulkBusy || selectedUndoableCount === 0}
-                    className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2.5 py-1 font-medium text-[var(--text-primary)] hover:bg-[var(--gridline)] disabled:opacity-50"
-                  >
-                    <Undo2 className="h-3 w-3" />
-                    Undo selected ({selectedUndoableCount})
-                  </button>
-                  <select
-                    value=""
-                    onChange={(e) => handleBulkReclassify(e.target.value)}
-                    disabled={bulkBusy}
-                    className="rounded-md border border-[var(--border)] bg-[var(--surface-1)] px-2 py-1 text-[var(--text-secondary)] disabled:opacity-50"
-                  >
-                    <option value="">Move selected to…</option>
-                    {knownFolders.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={clearSelection}
-                    className="ml-auto flex items-center gap-1 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                  >
-                    <X className="h-3 w-3" />
-                    Clear
-                  </button>
-                </>
-              )}
-            </div>
-          )}
-
-          <AnimatePresence>
-            {error && (
-              <motion.p
-                key={error}
-                initial={{ opacity: 0, y: -4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.15 }}
-                className="mb-3 rounded-lg bg-[var(--status-critical)]/10 px-3 py-2 text-xs font-medium text-[var(--status-critical)]"
-              >
-                {error}
-              </motion.p>
-            )}
-            {message && (
-              <motion.p
-                key={message}
-                initial={{ opacity: 0, y: -4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.15 }}
-                className="mb-3 rounded-lg bg-[var(--brand)]/10 px-3 py-2 text-xs font-medium text-[var(--brand)]"
-              >
-                {message}
-              </motion.p>
-            )}
-          </AnimatePresence>
-          <ActivityTable
-            logs={logs}
-            showStatusBadge
-            commandStatusByLogId={commandStatusByLogId}
-            onUndo={handleUndoRow}
-            undoingId={undoingId}
-            allowAnyRowUndo
-            onReclassify={handleReclassify}
-            categories={knownFolders}
-            selectable
-            selectedIds={selectedIds}
-            onToggleSelect={toggleSelect}
-          />
-        </motion.div>
+        {groups.map((g) => (
+          <section key={g.key} className="flex flex-col">
+            <h2 className="ff-kicker m-0 mb-1.5 text-[11px] font-bold">{g.heading}</h2>
+            <ol className="m-0 flex list-none flex-col border-l-2 border-[var(--ink)] p-0 pl-[18px]">
+              {g.items.map((log) => {
+                const stamp = stampFor(log);
+                const undoable = !log.undone && UNDOABLE_ACTIONS.includes(log.action);
+                const agent = agentLabel(commandStatusByLogId[log.id]);
+                const renamed = log.original_filename && log.original_filename !== log.final_filename;
+                const open = whyId === log.id;
+                const sourceDir = log.source_path ? folderName(log.source_path.replace(/[\\/][^\\/]*$/, "")) : "";
+                return (
+                  <li key={log.id} className="relative border-b border-dashed border-[var(--rule-2)]">
+                    <span
+                      aria-hidden="true"
+                      className="absolute left-[-25px] top-[18px] h-3 w-3 rounded-full border-2 border-[var(--sheet)]"
+                      style={{ background: DOT[stamp.tone] || "var(--ink)" }}
+                    />
+                    <div
+                      className="flex flex-wrap items-center gap-x-3.5 gap-y-2 py-3 transition-opacity"
+                      style={{ opacity: log.undone ? 0.55 : 1 }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(log.id)}
+                        onChange={() => toggleSelect(log.id)}
+                        disabled={log.undone}
+                        aria-label={`Select ${log.final_filename}`}
+                        className="h-[18px] w-[18px]"
+                        style={{ accentColor: "var(--ink)" }}
+                      />
+                      <span className="shrink-0 basis-[64px] font-mono-data text-[11.5px] font-medium text-[var(--ink-muted)]">
+                        {new Date(log.timestamp).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}
+                      </span>
+                      <span className="flex min-w-0 flex-[1_1_320px] flex-col gap-[3px]">
+                        <b className="text-[13px]">{operationTitle(log)}</b>
+                        <span className="flex flex-wrap items-center gap-1.5 font-mono-data text-[12px] font-medium text-[var(--ink-2)]">
+                          <span style={{ overflowWrap: "anywhere" }}>
+                            {sourceDir && <span className="text-[var(--ink-muted)]">{sourceDir}/</span>}
+                            <span>{renamed ? log.original_filename : log.final_filename}</span>
+                          </span>
+                          {renamed && (
+                            <Fragment>
+                              <span className="text-[var(--ink-muted)]">as</span>
+                              <span style={{ overflowWrap: "anywhere" }}>{log.final_filename}</span>
+                            </Fragment>
+                          )}
+                          <span className="text-[var(--stamp)]">→</span>
+                          <FolderTag>{log.category}</FolderTag>
+                        </span>
+                      </span>
+                      {log.undone ? (
+                        <Stamp tone="undone" size="lg" pop style={{ transform: "rotate(-3deg)" }}>
+                          Undone
+                        </Stamp>
+                      ) : (
+                        <Stamp tone={stamp.tone}>{stamp.label}</Stamp>
+                      )}
+                      {agent && <Stamp tone={agent.tone}>{`agent · ${agent.label}`}</Stamp>}
+                      <span className="ml-auto flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setWhyId(open ? null : log.id)}
+                          aria-expanded={open}
+                          aria-label={`Why was ${log.final_filename} placed here?`}
+                          className="ff-btn ff-btn-tertiary ff-btn-sm"
+                        >
+                          Why?
+                        </button>
+                        {log.destination_path && !log.undone && (
+                          <select
+                            value=""
+                            onChange={(e) => {
+                              if (e.target.value) handleReclassify(log, e.target.value);
+                            }}
+                            title="Move this file to a different category"
+                            aria-label={`Refile ${log.final_filename}`}
+                            className="ff-input h-[30px] max-w-[150px] text-[12px]"
+                          >
+                            <option value="">Refile to…</option>
+                            {knownFolders
+                              .filter((c) => c !== log.category)
+                              .map((c) => (
+                                <option key={c} value={c}>
+                                  {c}
+                                </option>
+                              ))}
+                          </select>
+                        )}
+                        {undoable && (
+                          <button
+                            type="button"
+                            onClick={() => handleUndoRow(log)}
+                            disabled={undoingId === log.id}
+                            className="ff-btn ff-btn-outline ff-btn-sm"
+                          >
+                            {undoingId === log.id ? "Undoing…" : "Undo"}
+                          </button>
+                        )}
+                      </span>
+                    </div>
+                    {open && (
+                      <div className="mb-3">
+                        <ExplanationPanel explanation={log.explanation} />
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          </section>
+        ))}
       </div>
     </>
   );

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getAgentCommands } from "../services/api.js";
+import Stamp from "./ui/Stamp.jsx";
 
 const ACTION_LABEL = { undo: "Undo", reclassify: "Reclassify" };
 
@@ -8,6 +9,12 @@ function statusLabel(command) {
   if (command.success === false) return "Failed";
   return "Completed";
 }
+
+const STATUS_TONE = {
+  "Waiting for agent…": "warn",
+  Failed: "error",
+  Completed: "ok",
+};
 
 // agent/commands.py's _do_undo() returns only (success, error) -- no result
 // dict at all, so a completed undo command's result is always {}. _do_
@@ -65,40 +72,43 @@ export default function RecentAgentActivity() {
   }, []);
 
   if (loadError) {
-    return <p className="text-xs text-[var(--text-secondary)]">Couldn't load recent activity.</p>;
+    return <p className="m-0 text-[13px] text-[var(--ink-muted)]">Couldn't load recent activity.</p>;
   }
 
   if (commands === null) {
-    return <p className="text-xs text-[var(--text-muted)]">Loading…</p>;
+    return <p className="m-0 text-[13px] text-[var(--ink-muted)]">Loading…</p>;
   }
 
   if (commands.length === 0) {
-    return <p className="text-xs text-[var(--text-secondary)]">No recent undo/reclassify activity.</p>;
+    return <p className="m-0 text-[13px] text-[var(--ink-muted)]">No recent undo/reclassify activity.</p>;
   }
 
   return (
-    <table className="w-full text-xs" data-testid="recent-agent-activity">
+    <table className="w-full border-collapse border-t border-[var(--ink)] text-[12.5px]" data-testid="recent-agent-activity">
       <thead>
-        <tr className="text-left text-[var(--text-muted)]">
-          <th className="pb-2 pr-4 font-normal">Time</th>
-          <th className="pb-2 pr-4 font-normal">Action</th>
-          <th className="pb-2 pr-4 font-normal">Status</th>
-          <th className="pb-2 font-normal">Result</th>
+        <tr className="text-left">
+          <th className="ff-kicker py-2 pr-4 text-[9.5px] font-semibold">Time</th>
+          <th className="ff-kicker py-2 pr-4 text-[9.5px] font-semibold">Action</th>
+          <th className="ff-kicker py-2 pr-4 text-[9.5px] font-semibold">Status</th>
+          <th className="ff-kicker py-2 text-[9.5px] font-semibold">Result</th>
         </tr>
       </thead>
       <tbody>
-        {commands.map((command) => (
-          <tr key={command.id} className="border-t border-[var(--border)]">
-            <td className="py-2 pr-4 text-[var(--text-secondary)]">
-              {new Date(command.created_at).toLocaleString()}
-            </td>
-            <td className="py-2 pr-4 text-[var(--text-primary)]">
-              {ACTION_LABEL[command.type] ?? command.type}
-            </td>
-            <td className="py-2 pr-4 text-[var(--text-primary)]">{statusLabel(command)}</td>
-            <td className="py-2 text-[var(--text-secondary)]">{resultText(command)}</td>
-          </tr>
-        ))}
+        {commands.map((command) => {
+          const label = statusLabel(command);
+          return (
+            <tr key={command.id} className="border-t border-[var(--rule)]">
+              <td className="py-2.5 pr-4 font-mono-data text-[11.5px] text-[var(--ink-muted)]">
+                {new Date(command.created_at).toLocaleString()}
+              </td>
+              <td className="py-2.5 pr-4 font-semibold">{ACTION_LABEL[command.type] ?? command.type}</td>
+              <td className="py-2.5 pr-4">
+                <Stamp tone={STATUS_TONE[label]}>{label}</Stamp>
+              </td>
+              <td className="py-2.5 font-mono-data text-[12px] text-[var(--ink-2)]">{resultText(command)}</td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );

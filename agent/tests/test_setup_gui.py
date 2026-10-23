@@ -59,7 +59,7 @@ class _Driver:
 
     def __init__(self):
         self.overrides: dict = {}
-        self.action = "save"  # "save" | "cancel" | "leave_open"
+        self.action = "save"  # "save" | "cancel" | "close" | "leave_open"
         self.prefilled: dict = {}
         self.caught_exceptions: list = []
         self.token_entry_show: str | None = None
@@ -155,6 +155,9 @@ def driver(monkeypatch):
             captured_buttons["Save & Start"].invoke()
         elif d.action == "cancel":
             captured_buttons["Cancel"].invoke()
+        elif d.action == "close":
+            close_command = self.protocol("WM_DELETE_WINDOW")
+            self.tk.call(close_command)
 
     monkeypatch.setattr(tk.Tk, "mainloop", _fake_mainloop)
     return d
@@ -282,6 +285,20 @@ def test_cancel_returns_none_and_leaves_the_existing_config_file_untouched(
     )
 
 
+def test_window_close_returns_none_without_changing_existing_config(driver, isolated_config_path):
+    original = json.dumps(
+        {"backend_url": "http://old.test", "token": "old-token", "watch_folder": "C:\\Old"}
+    )
+    isolated_config_path.write_text(original)
+    driver.action = "close"
+    existing = AgentConfig(backend_url="http://old.test", token="old-token", watch_folder="C:\\Old")
+
+    result = setup_gui.run_setup_wizard(existing=existing)
+
+    assert result is None
+    assert isolated_config_path.read_text() == original
+
+
 def test_cancel_button_is_only_offered_when_reconfiguring_an_existing_config(driver, isolated_config_path):
     """Traced from the source: the Cancel button is only constructed
     `if existing is not None`. First-run setup has no way to "cancel"
@@ -348,22 +365,25 @@ def test_token_field_is_masked_but_other_fields_are_not(driver, isolated_config_
 # ---------------------------------------------------------------------------
 
 
-def test_a_failed_save_is_contained_by_tkinter_and_leaves_no_partial_config(
+def test_a_failed_save_shows_an_error_and_leaves_no_partial_config(
     driver, isolated_config_path, tmp_path, monkeypatch
 ):
     def _fail(*a, **k):
         raise OSError("simulated disk-full while writing the config")
 
     monkeypatch.setattr(setup_gui, "save_config", _fail)
+    shown_errors = []
+    monkeypatch.setattr(setup_gui.messagebox, "showerror", lambda *a, **k: shown_errors.append(a))
     driver.overrides = {
         "backend_url": "http://example.test",
         "token": "test-token",
         "watch_folder": str(tmp_path / "watched"),
     }
 
-    result = setup_gui.run_setup_wizard()  # must not raise
+    result = setup_gui.run_setup_wizard()
 
     assert result is None, "on_save() never reached its saved[...] assignments"
     assert not isolated_config_path.exists(), "no partial config must be left behind"
-    assert len(driver.caught_exceptions) == 1
-    assert isinstance(driver.caught_exceptions[0], OSError)
+    assert driver.caught_exceptions == []
+    assert shown_errors
+    assert "simulated disk-full" in shown_errors[0][1]

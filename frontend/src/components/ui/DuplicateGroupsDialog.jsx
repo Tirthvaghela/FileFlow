@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from "./dialog.jsx";
 import { Button } from "./button.jsx";
+import { Badge } from "./badge.jsx";
 import { formatBytes } from "../../utils/categoryMeta.js";
 
 function DuplicateGroupCard({ group, index, onReviewGroup }) {
@@ -66,7 +67,13 @@ export default function DuplicateGroupsDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 font-display text-base font-semibold text-[var(--text-primary)]">
             <Copy className="h-4 w-4" />
-            Duplicate Files
+            <span>Duplicate Files</span>
+            <Badge
+              variant="secondary"
+              className="border border-[var(--primary-line)] bg-[var(--primary-tint)] text-[var(--primary)]"
+            >
+              Read-only
+            </Badge>
           </DialogTitle>
           <DialogDescription className="text-sm text-[var(--text-secondary)]">
             {waitingForAgent

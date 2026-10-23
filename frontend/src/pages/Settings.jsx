@@ -1,19 +1,13 @@
-import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, Copy, Loader2, Plus, X, XCircle } from "lucide-react";
-import { motion, AnimatePresence } from "motion/react";
-import Header from "../components/Header.jsx";
+import { useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { X } from "lucide-react";
+import PageHeading from "../components/PageHeading.jsx";
 import RecentScheduledActivity from "../components/RecentScheduledActivity.jsx";
 import ConfirmDialog from "../components/ui/ConfirmDialog.jsx";
 import Toggle from "../components/ui/Toggle.jsx";
+import FolderTag from "../components/ui/FolderTag.jsx";
 import { Button } from "../components/ui/button.jsx";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogTitle,
-} from "../components/ui/dialog.jsx";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "../components/ui/dialog.jsx";
 import { PasswordInput } from "../components/ui/PasswordInput.jsx";
 import {
   addWatchFolder,
@@ -27,69 +21,87 @@ import {
   setupTwoFactor,
   updateWatchFolder,
 } from "../services/api.js";
+import { folderName } from "../utils/activity.js";
 import { useRules } from "../context/RulesContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
-import { gsap, useGSAP } from "../lib/gsap.js";
 
-const textInputClass =
-  "mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--page)] px-3 py-2 text-sm text-[var(--text-primary)]";
+const DUP_MODES = [
+  { id: "rename", title: "Rename", desc: "Keep both. The new file gets a number.", example: "Documents/report (1).pdf" },
+  { id: "skip", title: "Skip", desc: "Leave the new file where it landed.", example: "stays in Downloads" },
+  { id: "replace", title: "Replace", desc: "Overwrite the existing file. Can't be undone.", example: "Documents/report.pdf (new)" },
+];
 
-const STATUS_META = {
-  "Saving…": { color: "var(--text-muted)", Icon: Loader2, spin: true },
-  Saved: { color: "var(--status-good)", Icon: CheckCircle2 },
-  "Failed to save": { color: "var(--status-critical)", Icon: XCircle },
-};
-
-function StatusMessage({ status }) {
-  const meta = status ? STATUS_META[status] : null;
+// Settings save immediately (each control writes through saveRules), so
+// a small toast confirms every change instead of a save bar.
+function SaveToast({ status }) {
+  if (!status) return null;
+  const color = status === "Failed to save" ? "var(--stamp)" : status === "Saved" ? "var(--filed)" : "var(--ink-muted)";
   return (
-    <AnimatePresence mode="wait">
-      {status && meta && (
-        <motion.p
-          key={status}
-          initial={{ opacity: 0, y: -4 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.15 }}
-          className="mt-4 flex items-center gap-1.5 text-xs font-medium"
-          style={{ color: meta.color }}
-        >
-          <meta.Icon className={`h-3.5 w-3.5 ${meta.spin ? "animate-spin" : ""}`} />
-          {status}
-        </motion.p>
-      )}
-    </AnimatePresence>
+    <div
+      role="status"
+      className="ff-pop fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-[4px] border border-[var(--rule-2)] bg-[var(--sheet)] px-3.5 py-2 text-[12.5px] font-semibold shadow-[0_10px_24px_-14px_var(--shade)]"
+      style={{ color }}
+    >
+      <span className="h-2 w-2 rounded-full" style={{ background: color }} />
+      {status}
+    </div>
   );
 }
 
-function Slider({ value, onChange, min, max, step = 1 }) {
-  const trackRef = useRef(null);
-  const pct = gsap.utils.clamp(0, 100, gsap.utils.mapRange(min, max, 0, 100, value));
-
-  useGSAP(
-    () => {
-      gsap.to(trackRef.current, { width: `${pct}%`, duration: 0.2, ease: "power1.out" });
-    },
-    { dependencies: [pct], scope: trackRef },
-  );
-
+function Card({ id, n, title, desc, danger = false, children, bodyClass = "p-[18px]" }) {
   return (
-    <div className="relative flex h-5 w-full items-center">
-      <div className="absolute inset-y-0 my-auto h-1.5 w-full rounded-full" style={{ background: "var(--gridline)" }} />
-      <div
-        ref={trackRef}
-        className="absolute inset-y-0 my-auto h-1.5 rounded-full"
-        style={{ background: "var(--brand)", width: 0 }}
-      />
+    <section
+      id={id}
+      className="scroll-mt-4 overflow-hidden rounded-[4px] border bg-[var(--sheet)]"
+      style={{ borderColor: danger ? "var(--stamp)" : "var(--rule-2)" }}
+    >
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-[var(--rule)] bg-[var(--sheet-2)] px-[18px] py-3.5">
+        <span className="font-mono-data text-[11px] font-semibold text-[var(--ink-muted)]">{n}</span>
+        <h2 className="ff-caps m-0 text-[15px]" style={{ color: danger ? "var(--stamp)" : "var(--ink)" }}>
+          {title}
+        </h2>
+        <span className="text-[12.5px] text-[var(--ink-muted)]">{desc}</span>
+      </div>
+      <div className={bodyClass}>{children}</div>
+    </section>
+  );
+}
+
+// One setting: text block grows, the control never wraps under it.
+function Row({ title, desc, children, last = false }) {
+  return (
+    <div className={`flex items-center gap-4 py-3.5 ${last ? "" : "border-b border-dashed border-[var(--rule-2)]"}`}>
+      <div className="flex min-w-0 flex-[1_1_0] flex-col gap-0.5">
+        <b className="text-[13.5px]">{title}</b>
+        {desc && <span className="text-[12px] text-[var(--ink-muted)]">{desc}</span>}
+      </div>
+      <div className="flex-none">{children}</div>
+    </div>
+  );
+}
+
+function Slider({ label, value, display, onChange, min, max, step = 1, help, muted = false }) {
+  const pct = Math.min(100, Math.max(0, ((value - min) / (max - min)) * 100));
+  return (
+    <div className="flex flex-col gap-1.5 border-b border-dashed border-[var(--rule-2)] py-3.5">
+      <div className="flex items-baseline justify-between gap-3">
+        <label className="text-[13.5px] font-bold">{label}</label>
+        <span className="font-mono-data text-[13px] font-semibold" style={{ color: muted ? "var(--ink-muted)" : "var(--ink)" }}>
+          {display}
+        </span>
+      </div>
       <input
         type="range"
         min={min}
         max={max}
         step={step}
         value={value}
+        aria-label={label}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="relative z-10 w-full cursor-pointer appearance-none bg-transparent [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-[var(--brand-foreground)] [&::-webkit-slider-thumb]:bg-[var(--brand)] [&::-webkit-slider-thumb]:shadow-sm [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-[var(--brand-foreground)] [&::-moz-range-thumb]:bg-[var(--brand)]"
+        className="ff-range"
+        style={{ "--ff-pct": `${pct}%` }}
       />
+      {help && <span className="text-[12px] text-[var(--ink-muted)]">{help}</span>}
     </div>
   );
 }
@@ -98,6 +110,7 @@ export default function Settings() {
   const { rules, saveRules } = useRules();
   const { user, refresh: refreshUser, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const savedWatchFolder = user?.watch_folder || "";
   const [watchFolder, setWatchFolder] = useState(savedWatchFolder);
   const [folderStatus, setFolderStatus] = useState("");
@@ -120,6 +133,7 @@ export default function Settings() {
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteError, setDeleteError] = useState("");
   const [deletingAccount, setDeletingAccount] = useState(false);
+  const [activeSection, setActiveSection] = useState("watch-folders");
 
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(null);
   const [twoFactorSetup, setTwoFactorSetup] = useState(null);
@@ -141,6 +155,36 @@ export default function Settings() {
     getTwoFactorStatus()
       .then((s) => setTwoFactorEnabled(s.enabled))
       .catch(() => {});
+  }, []);
+
+  // Local input state so a PUT only fires once the field loses focus.
+  useEffect(() => {
+    if (rules) {
+      setArchiveFolder(rules.archive_folder);
+      setDefaultCategory(rules.default_category);
+    }
+  }, [rules]);
+
+  // Deep links (e.g. Rules → "Open Settings") land on their section.
+  const hasRules = !!rules;
+  useEffect(() => {
+    const id = location.hash.replace("#", "");
+    if (id && hasRules) document.getElementById(id)?.scrollIntoView?.({ behavior: "smooth" });
+  }, [location.hash, hasRules]);
+
+  // Highlights the section currently in view in the numbered nav.
+  useEffect(() => {
+    function onScroll() {
+      const ids = ["watch-folders", "monitoring-schedule", "automation-policy", "remote-agent", "two-factor", "danger-zone"];
+      let current = ids[0];
+      for (const id of ids) {
+        const el = document.getElementById(id);
+        if (el && el.getBoundingClientRect().top < 140) current = id;
+      }
+      setActiveSection(current);
+    }
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
   function commitWatchFolder() {
@@ -221,25 +265,11 @@ export default function Settings() {
     }
   }
 
-  // Local input state so a PUT only fires once the field loses focus, not
-  // on every keystroke (unlike the sliders/toggles below, which are cheap
-  // to save immediately).
-  useEffect(() => {
-    if (rules) {
-      setArchiveFolder(rules.archive_folder);
-      setDefaultCategory(rules.default_category);
-    }
-  }, [rules]);
-
   async function save(patch) {
     setStatus("Saving…");
     try {
-      // Updater form, not a `{ ...rules, ...patch }` snapshot -- the
-      // archive-days/threshold sliders fire one save per pointer-move
-      // while dragging, so several of these can be queued at once, each
-      // needing to apply its own patch on top of whichever save ahead of
-      // it in the queue lands, not the `rules` this component rendered
-      // with before the drag started.
+      // Updater form: slider drags queue several saves, each applying its
+      // own patch on top of whichever save ahead of it lands.
       await saveRules((current) => ({ ...current, ...patch }));
       setStatus("Saved");
       setTimeout(() => setStatus(""), 1500);
@@ -252,6 +282,12 @@ export default function Settings() {
     const trimmed = archiveFolder.trim() || "Archive";
     setArchiveFolder(trimmed);
     if (trimmed !== rules.archive_folder) save({ archive_folder: trimmed });
+  }
+
+  function commitDefaultCategory() {
+    const trimmed = defaultCategory.trim() || "Others";
+    setDefaultCategory(trimmed);
+    if (trimmed !== rules.default_category) save({ default_category: trimmed });
   }
 
   async function handleGenerateAgentToken() {
@@ -300,8 +336,7 @@ export default function Settings() {
     setStartingSetup(true);
     setTwoFactorError("");
     try {
-      const data = await setupTwoFactor();
-      setTwoFactorSetup(data);
+      setTwoFactorSetup(await setupTwoFactor());
     } catch {
       setTwoFactorError("Couldn't start 2FA setup -- try again.");
     } finally {
@@ -355,530 +390,473 @@ export default function Settings() {
     }
   }
 
-  function commitDefaultCategory() {
-    const trimmed = defaultCategory.trim() || "Others";
-    setDefaultCategory(trimmed);
-    if (trimmed !== rules.default_category) save({ default_category: trimmed });
-  }
+  const heading = (
+    <PageHeading index={7} kicker="Configuration" title="Settings" subtitle="How FileFlow watches, sorts and handles duplicates." />
+  );
 
   if (!rules) {
     return (
       <>
-        <Header title="Settings" subtitle="Configure monitoring and automation policy" />
-        <div className="p-8 text-sm text-[var(--text-muted)]">Loading…</div>
+        {heading}
+        <div className="text-sm text-[var(--ink-muted)]">Loading…</div>
       </>
     );
   }
 
+  const folderCount = 1 + (user?.additional_watch_folders || []).length;
+  const watchBase = folderName(savedWatchFolder) || "Downloads";
+  const nav = [
+    { id: "watch-folders", n: "01", label: "Watch folders", state: `${folderCount} folder${folderCount === 1 ? "" : "s"}` },
+    {
+      id: "monitoring-schedule",
+      n: "02",
+      label: "Monitoring & schedule",
+      state: `Auto-sort ${rules.realtime_monitoring_enabled ? "on" : "off"}${rules.scheduled_organize_enabled ? ` · nightly ${rules.scheduled_organize_time}` : ""}`,
+      color: rules.realtime_monitoring_enabled ? "var(--filed)" : "var(--warn)",
+    },
+    {
+      id: "automation-policy",
+      n: "03",
+      label: "Automation policy",
+      state: `${DUP_MODES.find((m) => m.id === rules.duplicate_handling)?.title || "Rename"} · ${rules.archive_after_days} days`,
+    },
+    {
+      id: "remote-agent",
+      n: "04",
+      label: "Remote agent",
+      state: user?.agent_connected ? "Connected" : "Not connected",
+      color: user?.agent_connected ? "var(--filed)" : undefined,
+    },
+    {
+      id: "two-factor",
+      n: "05",
+      label: "Two-factor",
+      state: twoFactorEnabled == null ? "…" : twoFactorEnabled ? "2FA on" : "2FA off",
+      color: twoFactorEnabled ? "var(--filed)" : twoFactorEnabled === false ? "var(--warn)" : undefined,
+    },
+    { id: "danger-zone", n: "06", label: "Danger zone", state: "Permanent", danger: true },
+  ];
+
+  function goTo(id) {
+    setActiveSection(id);
+    document.getElementById(id)?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+  }
+
   return (
     <>
-      <Header title="Settings" subtitle="Configure monitoring and automation policy" />
-      <div className="grid grid-cols-1 gap-6 p-8 lg:grid-cols-2">
-        <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-5 shadow-sm">
-          <h2 className="mb-4 text-sm font-medium text-[var(--text-primary)]">
-            Folder monitoring
-          </h2>
-
-          <label className="mb-4 block text-sm text-[var(--text-secondary)]">
-            Watched folder
-            <div className="flex gap-2">
-              <input
-                value={watchFolder}
-                onChange={(e) => setWatchFolder(e.target.value)}
-                onBlur={commitWatchFolder}
-                spellCheck={false}
-                className={`${textInputClass} flex-1`}
-              />
+      {heading}
+      <div className="ff-in flex flex-col gap-7 lg:flex-row lg:items-start">
+        <nav
+          aria-label="Settings sections"
+          className="ff-scroll-x ff-fade-edge -mx-1 flex gap-1 px-1 lg:sticky lg:top-4 lg:mx-0 lg:w-[220px] lg:min-w-[190px] lg:flex-none lg:flex-col lg:gap-0.5 lg:overflow-visible lg:px-0 lg:[mask-image:none]"
+        >
+          <span className="ff-kicker hidden pb-1.5 lg:block">Sections</span>
+          {nav.map((item) => {
+            const on = activeSection === item.id;
+            return (
               <button
+                key={item.id}
                 type="button"
-                onClick={handleBrowseFolder}
-                disabled={browsingFolder}
-                className="mt-1 shrink-0 rounded-md border border-[var(--border)] bg-[var(--page)] px-3 py-2 text-sm font-medium text-[var(--text-secondary)] hover:bg-[var(--gridline)] disabled:opacity-50"
-              >
-                {browsingFolder ? "Opening…" : "Browse…"}
-              </button>
-            </div>
-            {folderStatus && (
-              <span className="mt-1 block text-xs text-[var(--text-muted)]">{folderStatus}</span>
-            )}
-            {folderError && (
-              <span className="mt-1 block text-xs" style={{ color: "var(--status-critical)" }}>
-                {folderError}
-              </span>
-            )}
-          </label>
-
-          <div className="mb-4">
-            <div className="mb-1.5 flex items-center justify-between">
-              <span className="text-sm text-[var(--text-secondary)]">
-                Additional watch folders
-              </span>
-              <button
-                type="button"
-                onClick={handleAddAdditionalFolder}
-                disabled={addingFolder}
-                className="flex items-center gap-1 text-xs font-medium text-[var(--brand)] hover:underline disabled:opacity-50"
-              >
-                <Plus className="h-3 w-3" />
-                {addingFolder ? "Opening…" : "Add folder"}
-              </button>
-            </div>
-            {(user?.additional_watch_folders || []).length === 0 ? (
-              <p className="text-xs text-[var(--text-muted)]">
-                Watch more than one folder with the same rules -- add one here.
-              </p>
-            ) : (
-              <ul className="space-y-1.5">
-                {user.additional_watch_folders.map((path) => (
-                  <li
-                    key={path}
-                    className="flex items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--page)] px-3 py-2"
-                  >
-                    <span className="min-w-0 flex-1 truncate text-xs text-[var(--text-primary)]">
-                      {path}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveAdditionalFolder(path)}
-                      disabled={removingFolder === path}
-                      className="shrink-0 text-[var(--text-muted)] hover:text-[var(--status-critical)] disabled:opacity-50"
-                      aria-label={`Stop watching ${path}`}
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {additionalFolderError && (
-              <span className="mt-1.5 block text-xs" style={{ color: "var(--status-critical)" }}>
-                {additionalFolderError}
-              </span>
-            )}
-            {user?.agent_connected && (user?.additional_watch_folders || []).length > 0 && (
-              <div
-                className="mt-2 rounded-md border px-3 py-2"
+                onClick={() => goTo(item.id)}
+                aria-current={on ? "true" : undefined}
+                className="grid flex-none cursor-pointer gap-x-2 gap-y-px rounded-[0_4px_4px_0] border-0 px-2.5 py-[9px] text-left transition-colors hover:bg-[var(--sheet-2)]"
                 style={{
-                  borderColor: "var(--status-warning)",
-                  background: "color-mix(in srgb, var(--status-warning) 10%, transparent)",
+                  gridTemplateColumns: "22px minmax(0,1fr)",
+                  borderLeft: `3px solid ${on ? "var(--stamp)" : "transparent"}`,
+                  background: on ? "var(--sheet-2)" : "transparent",
                 }}
               >
-                <p className="text-xs font-medium" style={{ color: "var(--status-warning)" }}>
-                  Remote agent watches only one folder
-                </p>
-                <p className="mt-0.5 text-xs text-[var(--text-secondary)]">
-                  Your connected agent monitors and organizes only the one folder it's set up
-                  with. Real-time monitoring and "Organize existing files" don't reach your
-                  other watch folders while the agent stays connected.
-                </p>
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center justify-between border-t border-[var(--border)] py-3">
-            <div>
-              <div className="text-sm text-[var(--text-primary)]">Real-time monitoring</div>
-              <div className="text-xs text-[var(--text-muted)]">
-                Detect files the instant they land
-              </div>
-            </div>
-            <Toggle
-              checked={rules.realtime_monitoring_enabled}
-              onChange={(v) => save({ realtime_monitoring_enabled: v })}
-            />
-          </div>
-
-          <div className="flex items-center justify-between border-t border-[var(--border)] py-3">
-            <div>
-              <div className="text-sm text-[var(--text-primary)]">Desktop notifications</div>
-              <div className="text-xs text-[var(--text-muted)]">Toast on every action</div>
-            </div>
-            <Toggle
-              checked={rules.desktop_notifications_enabled}
-              onChange={(v) => save({ desktop_notifications_enabled: v })}
-            />
-          </div>
-
-          <div className="flex items-center justify-between border-t border-[var(--border)] py-3">
-            <div>
-              <div className="text-sm text-[var(--text-primary)]">Scheduled nightly sweep</div>
-              <div className="text-xs text-[var(--text-muted)]">
-                Run "Organize existing files" automatically every day
-              </div>
-            </div>
-            <Toggle
-              checked={rules.scheduled_organize_enabled}
-              onChange={(v) => save({ scheduled_organize_enabled: v })}
-            />
-          </div>
-          {rules.scheduled_organize_enabled && (
-            <div className="flex items-center justify-between border-t border-[var(--border)] py-3">
-              <div className="text-sm text-[var(--text-secondary)]">Run at</div>
-              <input
-                type="time"
-                value={rules.scheduled_organize_time}
-                onChange={(e) => save({ scheduled_organize_time: e.target.value })}
-                className="rounded-md border border-[var(--border)] bg-[var(--page)] px-3 py-1.5 text-sm text-[var(--text-primary)]"
-              />
-            </div>
-          )}
-          {rules.scheduled_organize_enabled && (
-            <div className="border-t border-[var(--border)] pt-3">
-              <div className="mb-2 text-sm text-[var(--text-primary)]">
-                Recent scheduled activity
-              </div>
-              <RecentScheduledActivity />
-            </div>
-          )}
-        </section>
-
-        <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-5 shadow-sm">
-          <h2 className="mb-4 text-sm font-medium text-[var(--text-primary)]">
-            Automation policy
-          </h2>
-
-          <div className="mb-5">
-            <div className="mb-2 text-sm text-[var(--text-secondary)]">Duplicate handling</div>
-            <div className="grid grid-cols-3 gap-2">
-              {["rename", "skip", "replace"].map((mode) => (
-                <button
-                  key={mode}
-                  onClick={() => save({ duplicate_handling: mode })}
-                  className="rounded-lg border px-3 py-2 text-sm font-medium capitalize"
-                  style={
-                    rules.duplicate_handling === mode
-                      ? {
-                          borderColor: "var(--brand)",
-                          color: "var(--brand)",
-                          background: "color-mix(in srgb, var(--brand) 10%, transparent)",
-                        }
-                      : { borderColor: "var(--border)", color: "var(--text-secondary)" }
-                  }
-                >
-                  {mode}
-                </button>
-              ))}
-            </div>
-            {rules.duplicate_handling === "replace" && (
-              <p className="mt-2 text-xs" style={{ color: "var(--status-critical)" }}>
-                Replace permanently deletes the existing file at the destination before moving the new one in. This can't be undone.
-              </p>
-            )}
-          </div>
-
-          <div className="mb-5">
-            <div className="mb-2 flex items-center justify-between text-sm">
-              <span className="text-[var(--text-secondary)]">Archive files older than</span>
-              <span className="font-medium text-[var(--brand)]">
-                {rules.archive_after_days} days
-              </span>
-            </div>
-            <Slider
-              min={1}
-              max={90}
-              value={rules.archive_after_days}
-              onChange={(v) => save({ archive_after_days: v })}
-            />
-          </div>
-
-          <div className="mb-5">
-            <div className="mb-2 flex items-center justify-between text-sm">
-              <span className="text-[var(--text-secondary)]">Large file threshold</span>
-              <span className="font-medium text-[var(--brand)]">
-                {rules.large_file_threshold_mb} MB
-              </span>
-            </div>
-            <Slider
-              min={10}
-              max={2000}
-              step={10}
-              value={rules.large_file_threshold_mb}
-              onChange={(v) => save({ large_file_threshold_mb: v })}
-            />
-          </div>
-
-          <div className="mb-5">
-            <div className="mb-2 flex items-center justify-between text-sm">
-              <span className="text-[var(--text-secondary)]">Empty Recycle Bin entries after</span>
-              <span className="font-medium text-[var(--brand)]">
-                {rules.recycle_bin_retention_days} days
-              </span>
-            </div>
-            <Slider
-              min={1}
-              max={90}
-              value={rules.recycle_bin_retention_days}
-              onChange={(v) => save({ recycle_bin_retention_days: v })}
-            />
-            <p className="mt-1 text-xs text-[var(--text-muted)]">
-              Only files FileFlow itself sent to the Recycle Bin (via Categories → Delete) are ever permanently purged, and only after sitting this long.
-            </p>
-          </div>
-
-          <div className="mb-5">
-            <div className="mb-2 flex items-center justify-between text-sm">
-              <span className="text-[var(--text-secondary)]">Alert when a category exceeds</span>
-              <span className="font-medium text-[var(--brand)]">
-                {rules.storage_alert_threshold_gb > 0
-                  ? `${rules.storage_alert_threshold_gb} GB`
-                  : "Disabled"}
-              </span>
-            </div>
-            <Slider
-              min={0}
-              max={50}
-              step={0.5}
-              value={rules.storage_alert_threshold_gb}
-              onChange={(v) => save({ storage_alert_threshold_gb: v })}
-            />
-            <p className="mt-1 text-xs text-[var(--text-muted)]">
-              When a category folder crosses this size, FileFlow notifies you and automatically archives its oldest files to bring it back down. 0 disables this.
-            </p>
-          </div>
-
-          <label className="mb-4 block text-sm text-[var(--text-secondary)]">
-            Archive folder name
-            <input
-              value={archiveFolder}
-              onChange={(e) => setArchiveFolder(e.target.value)}
-              onBlur={commitArchiveFolder}
-              className={textInputClass}
-            />
-          </label>
-
-          <label className="block text-sm text-[var(--text-secondary)]">
-            Fallback folder name
-            <input
-              value={defaultCategory}
-              onChange={(e) => setDefaultCategory(e.target.value)}
-              onBlur={commitDefaultCategory}
-              className={textInputClass}
-            />
-            <span className="mt-1 block text-xs text-[var(--text-muted)]">
-              Used for files that don't match any rule or category.
-            </span>
-          </label>
-
-          <StatusMessage status={status} />
-        </section>
-      </div>
-
-      <div className="px-8 pb-8">
-        <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-5 shadow-sm">
-          <h2 className="mb-1 text-sm font-medium text-[var(--text-primary)]">Remote agent</h2>
-          <p className="mb-4 text-xs text-[var(--text-muted)]">
-            Run FileFlow's agent on your own machine so it watches your real local folder
-            directly, instead of a folder on whatever machine runs this dashboard. Install it
-            from the <strong>Downloads</strong> menu in the top bar — the first time it runs,
-            it'll ask for this dashboard's address and a token. Generate one below and paste it
-            in.
-          </p>
-
-          <div className="mb-3 flex gap-2">
-            <button
-              type="button"
-              onClick={() => setSelectedTokenScope("full")}
-              className="rounded-lg border px-3 py-1.5 text-xs font-medium"
-              style={
-                selectedTokenScope === "full"
-                  ? { borderColor: "var(--brand)", color: "var(--brand)", background: "color-mix(in srgb, var(--brand) 10%, transparent)" }
-                  : { borderColor: "var(--border)", color: "var(--text-secondary)" }
-              }
-            >
-              Full control
-            </button>
-            <button
-              type="button"
-              onClick={() => setSelectedTokenScope("read_only")}
-              className="rounded-lg border px-3 py-1.5 text-xs font-medium"
-              style={
-                selectedTokenScope === "read_only"
-                  ? { borderColor: "var(--brand)", color: "var(--brand)", background: "color-mix(in srgb, var(--brand) 10%, transparent)" }
-                  : { borderColor: "var(--border)", color: "var(--text-secondary)" }
-              }
-            >
-              Read-only
-            </button>
-          </div>
-          <p className="mb-3 text-xs text-[var(--text-muted)]">
-            {selectedTokenScope === "full"
-              ? "Can watch, organize, and report activity -- what a real agent installation needs."
-              : "Can only fetch rules -- can't move files, report activity, or run commands. Useful for a monitoring/preview integration that shouldn't be able to touch anything."}
-          </p>
-
-          <button
-            type="button"
-            onClick={handleGenerateAgentToken}
-            disabled={generatingToken}
-            className="rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-medium text-[var(--brand-foreground)] hover:opacity-90 disabled:opacity-50"
-          >
-            {generatingToken ? "Generating…" : "Generate agent token"}
-          </button>
-          {tokenError && (
-            <span className="mt-2 block text-xs" style={{ color: "var(--status-critical)" }}>
-              {tokenError}
-            </span>
-          )}
-
-          {agentToken && (
-            <div className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--page)] p-3">
-              <div className="mb-1.5 flex items-center justify-between">
-                <span className="text-xs font-medium text-[var(--text-secondary)]">
-                  Shown once — copy it now
-                  {agentTokenScope === "read_only" && (
-                    <span
-                      className="ml-1.5 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
-                      style={{ color: "var(--status-warning)", background: "color-mix(in srgb, var(--status-warning) 14%, transparent)" }}
-                    >
-                      Read-only
-                    </span>
-                  )}
+                <span className="row-span-2 pt-0.5 font-mono-data text-[10.5px] font-semibold text-[var(--ink-muted)]">{item.n}</span>
+                <b className="whitespace-nowrap text-[13px]" style={{ color: item.danger ? "var(--stamp)" : "var(--ink)" }}>
+                  {item.label}
+                </b>
+                <span className="whitespace-nowrap text-[11.5px]" style={{ color: item.color || "var(--ink-muted)" }}>
+                  {item.state}
                 </span>
-                <button
-                  type="button"
-                  onClick={copyAgentToken}
-                  className="flex items-center gap-1 text-xs text-[var(--brand)] hover:underline"
-                >
-                  <Copy className="h-3 w-3" />
-                  {tokenCopied ? "Copied" : "Copy"}
-                </button>
-              </div>
-              <code className="block break-all font-mono-data text-[11px] text-[var(--text-primary)]">
-                {agentToken}
-              </code>
-              <p className="mt-2 text-xs" style={{ color: "var(--status-warning)" }}>
-                Generating a new token immediately invalidates this one and any others issued
-                before it.
-              </p>
-            </div>
-          )}
-        </section>
-      </div>
-
-      <div className="px-8 pb-8">
-        <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-5 shadow-sm">
-          <h2 className="mb-1 text-sm font-medium text-[var(--text-primary)]">
-            Two-factor authentication
-          </h2>
-          <p className="mb-4 text-xs text-[var(--text-muted)]">
-            Require a code from an authenticator app in addition to your password when signing
-            in.
-          </p>
-
-          {twoFactorEnabled === null ? (
-            <p className="text-xs text-[var(--text-muted)]">Loading…</p>
-          ) : backupCodes ? (
-            <div className="rounded-lg border border-[var(--border)] bg-[var(--page)] p-3">
-              <p className="mb-2 text-xs font-medium text-[var(--text-secondary)]">
-                Save these backup codes — shown once. Each works one time if you lose access to
-                your authenticator app.
-              </p>
-              <div className="grid grid-cols-2 gap-1.5 font-mono-data text-xs text-[var(--text-primary)]">
-                {backupCodes.map((c) => (
-                  <code key={c} className="rounded bg-[var(--surface-1)] px-2 py-1">
-                    {c}
-                  </code>
-                ))}
-              </div>
-              <button
-                type="button"
-                onClick={() => setBackupCodes(null)}
-                className="mt-3 rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-medium text-[var(--brand-foreground)] hover:opacity-90"
-              >
-                I've saved these
               </button>
-            </div>
-          ) : twoFactorSetup ? (
-            <div className="rounded-lg border border-[var(--border)] bg-[var(--page)] p-3">
-              <p className="mb-3 text-xs text-[var(--text-secondary)]">
-                Scan this with your authenticator app (Google Authenticator, Authy, etc.), then
-                enter the 6-digit code it shows.
-              </p>
-              <img
-                src={twoFactorSetup.qr_code_data_uri}
-                alt="2FA setup QR code"
-                className="mb-3 h-40 w-40 rounded-lg border border-[var(--border)] bg-white p-2"
-              />
-              <p className="mb-3 text-xs text-[var(--text-muted)]">
-                Can't scan it? Enter this key manually:{" "}
-                <code className="font-mono-data text-[var(--text-primary)]">
-                  {twoFactorSetup.secret}
-                </code>
-              </p>
-              <label className="mb-3 block text-sm text-[var(--text-secondary)]">
-                6-digit code
-                <input
-                  value={enableCode}
-                  onChange={(e) => setEnableCode(e.target.value)}
-                  placeholder="123456"
-                  className={textInputClass}
-                />
+            );
+          })}
+        </nav>
+
+        <div className="flex min-w-0 flex-1 flex-col gap-[18px]">
+          <Card id="watch-folders" n="01" title="Watch folders" desc="Where FileFlow looks for new files.">
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="ff-watch" className="ff-kicker">
+                Watched folder
               </label>
-              {twoFactorError && (
-                <p className="mb-3 text-xs" style={{ color: "var(--status-critical)" }}>
-                  {twoFactorError}
-                </p>
-              )}
               <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={handleEnableTwoFactor}
-                  disabled={enablingTwoFactor || !enableCode.trim()}
-                  className="rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-medium text-[var(--brand-foreground)] hover:opacity-90 disabled:opacity-50"
-                >
-                  {enablingTwoFactor ? "Verifying…" : "Enable"}
-                </button>
-                <button
-                  type="button"
-                  onClick={cancelTwoFactorSetup}
-                  className="rounded-lg border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--text-secondary)] hover:bg-[var(--gridline)]"
-                >
-                  Cancel
+                <input
+                  id="ff-watch"
+                  value={watchFolder}
+                  onChange={(e) => setWatchFolder(e.target.value)}
+                  onBlur={commitWatchFolder}
+                  spellCheck={false}
+                  className="ff-input flex-1"
+                />
+                <button type="button" onClick={handleBrowseFolder} disabled={browsingFolder} className="ff-btn ff-btn-tertiary ff-btn-lg">
+                  {browsingFolder ? "Opening…" : "Browse…"}
                 </button>
               </div>
+              {folderStatus && <span className="font-mono-data text-[11.5px] text-[var(--ink-muted)]">{folderStatus}</span>}
+              {folderError && <span className="text-xs text-[var(--stamp)]">{folderError}</span>}
             </div>
-          ) : twoFactorEnabled ? (
-            <div className="flex items-center justify-between">
-              <span
-                className="rounded-lg px-3 py-1.5 text-xs font-medium"
-                style={{ color: "var(--status-good)", background: "color-mix(in srgb, var(--status-good) 14%, transparent)" }}
-              >
-                Enabled
-              </span>
-              <button
-                type="button"
-                onClick={() => setDisable2FADialogOpen(true)}
-                className="rounded-lg border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--text-secondary)] hover:bg-[var(--gridline)]"
-              >
-                Disable
-              </button>
-            </div>
-          ) : (
-            <>
-              {twoFactorError && (
-                <p className="mb-3 text-xs" style={{ color: "var(--status-critical)" }}>
-                  {twoFactorError}
-                </p>
+
+            <div className="mt-5 flex flex-col gap-2">
+              <div className="flex items-center gap-2.5">
+                <span className="ff-kicker">Additional folders</span>
+                <span className="flex-1 border-t border-dashed border-[var(--rule-2)]" />
+              </div>
+              {(user?.additional_watch_folders || []).length === 0 ? (
+                <p className="m-0 text-[12.5px] text-[var(--ink-muted)]">Watch more than one folder with the same rules — add one here.</p>
+              ) : (
+                <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
+                  {user.additional_watch_folders.map((path) => (
+                    <li key={path} className="flex items-center gap-2 rounded-[4px] border border-[var(--rule-2)] bg-[var(--sheet)] px-3 py-2">
+                      <span className="min-w-0 flex-1 truncate font-mono-data text-[12.5px]">{path}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveAdditionalFolder(path)}
+                        disabled={removingFolder === path}
+                        className="shrink-0 cursor-pointer border-none bg-transparent text-[var(--ink-muted)] hover:text-[var(--stamp)] disabled:opacity-60"
+                        aria-label={`Stop watching ${path}`}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               )}
-              <button
-                type="button"
-                onClick={handleStartTwoFactorSetup}
-                disabled={startingSetup}
-                className="rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-medium text-[var(--brand-foreground)] hover:opacity-90 disabled:opacity-50"
-              >
-                {startingSetup ? "Starting…" : "Set up 2FA"}
+              <div>
+                <button type="button" onClick={handleAddAdditionalFolder} disabled={addingFolder} className="ff-btn ff-btn-tertiary">
+                  {addingFolder ? "Opening…" : "+ Add folder"}
+                </button>
+              </div>
+              {additionalFolderError && <span className="text-xs text-[var(--stamp)]">{additionalFolderError}</span>}
+              {user?.agent_connected && (user?.additional_watch_folders || []).length > 0 && (
+                <div className="rounded-[4px] border-l-[3px] border-[var(--warn)] bg-[var(--warn-bg)] px-3 py-2">
+                  <p className="m-0 text-[12.5px] font-semibold text-[var(--warn)]">Remote agent watches only one folder</p>
+                  <p className="m-0 mt-0.5 text-[12px] text-[var(--ink-2)]">
+                    Your connected agent monitors and organizes only the one folder it's set up with. Real-time monitoring and
+                    "Organize existing files" don't reach your other watch folders while the agent stays connected.
+                  </p>
+                </div>
+              )}
+            </div>
+          </Card>
+
+          <Card id="monitoring-schedule" n="02" title="Monitoring & schedule" desc="What FileFlow watches and when it acts." bodyClass="px-[18px] pb-2 pt-[18px]">
+            <div className="flex items-center gap-5 border-b border-dashed border-[var(--rule-2)] pb-4">
+              <div className="flex min-w-0 flex-[1_1_0] flex-col gap-1">
+                <b className="ff-display text-[22px]">Auto-sort is {rules.realtime_monitoring_enabled ? "on" : "off"}</b>
+                <span className="text-[13px] text-[var(--ink-2)]">
+                  {rules.realtime_monitoring_enabled
+                    ? "New files are sorted as soon as they finish downloading."
+                    : "New downloads stay where they land until you turn this back on."}
+                </span>
+              </div>
+              <Toggle
+                size="lg"
+                checked={rules.realtime_monitoring_enabled}
+                onChange={(v) => save({ realtime_monitoring_enabled: v })}
+                label="Real-time monitoring"
+              />
+            </div>
+            <Row title="Desktop notifications" desc="A toast on every action FileFlow takes.">
+              <Toggle checked={rules.desktop_notifications_enabled} onChange={(v) => save({ desktop_notifications_enabled: v })} label="Desktop notifications" />
+            </Row>
+            <Row
+              title="Scheduled nightly sweep"
+              desc={'Run "Organize existing files" automatically every day.'}
+              last={!rules.scheduled_organize_enabled}
+            >
+              <Toggle checked={rules.scheduled_organize_enabled} onChange={(v) => save({ scheduled_organize_enabled: v })} label="Scheduled nightly sweep" />
+            </Row>
+            {rules.scheduled_organize_enabled && (
+              <>
+                <Row title="Run at" desc="Local time on the machine running FileFlow.">
+                  <input
+                    type="time"
+                    value={rules.scheduled_organize_time}
+                    onChange={(e) => save({ scheduled_organize_time: e.target.value })}
+                    aria-label="Run at"
+                    className="ff-input h-[34px]"
+                  />
+                </Row>
+                <div className="flex flex-col gap-2 py-3.5">
+                  <span className="ff-kicker">Recent scheduled activity</span>
+                  <RecentScheduledActivity />
+                </div>
+              </>
+            )}
+          </Card>
+
+          <Card id="automation-policy" n="03" title="Automation policy" desc="Duplicates, archiving, size and storage limits.">
+            <div className="flex flex-col gap-2.5">
+              <span className="ff-kicker">Duplicate handling</span>
+              <div role="radiogroup" aria-label="Duplicate handling" className="grid gap-2.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 170px), 1fr))" }}>
+                {DUP_MODES.map((m) => {
+                  const on = rules.duplicate_handling === m.id;
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={on}
+                      onClick={() => save({ duplicate_handling: m.id })}
+                      className="flex cursor-pointer flex-col gap-2 rounded-[4px] border-[1.5px] p-3.5 text-left transition-[border-color,background,transform] hover:-translate-y-0.5"
+                      style={{ borderColor: on ? "var(--ink)" : "var(--rule-2)", background: on ? "var(--sheet-2)" : "var(--sheet)", transitionDuration: "var(--d2)" }}
+                    >
+                      <span className="flex items-center gap-2">
+                        <span className="grid h-4 w-4 place-items-center rounded-full border-[1.5px] border-[var(--ink)]">
+                          <span className="h-2 w-2 rounded-full" style={{ background: on ? "var(--stamp)" : "transparent" }} />
+                        </span>
+                        <b className="text-[14px]">{m.title}</b>
+                      </span>
+                      <span className="text-[12.5px] text-[var(--ink-2)]">{m.desc}</span>
+                      <span className="mt-auto flex flex-col gap-[3px] rounded-[3px] border border-[var(--rule)] bg-[var(--sheet)] p-2 font-mono-data text-[11.5px]" style={{ overflowWrap: "anywhere" }}>
+                        <span className="text-[var(--ink-muted)]">Documents/report.pdf exists</span>
+                        <span>
+                          <span className="text-[var(--stamp)]">→ </span>
+                          {m.example}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {rules.duplicate_handling === "replace" ? (
+                <p className="m-0 text-[12px] text-[var(--stamp)]">
+                  Replace permanently deletes the existing file at the destination before moving the new one in. This can't be undone.
+                </p>
+              ) : (
+                <p className="m-0 text-[12px] text-[var(--ink-muted)]">Applies when the destination already has a file with that name.</p>
+              )}
+            </div>
+
+            <div className="mt-3 flex flex-col">
+              <Slider
+                label="Archive files older than"
+                value={rules.archive_after_days}
+                display={`${rules.archive_after_days} days`}
+                min={1}
+                max={90}
+                onChange={(v) => save({ archive_after_days: v })}
+                help="Files left untouched this long are moved to the archive folder."
+              />
+              <Slider
+                label="Large file threshold"
+                value={rules.large_file_threshold_mb}
+                display={`${rules.large_file_threshold_mb} MB`}
+                min={10}
+                max={2000}
+                step={10}
+                onChange={(v) => save({ large_file_threshold_mb: v })}
+                help="Tier 05: anything bigger goes to the large-files folder."
+              />
+              <Slider
+                label="Empty Recycle Bin entries after"
+                value={rules.recycle_bin_retention_days}
+                display={`${rules.recycle_bin_retention_days} days`}
+                min={1}
+                max={90}
+                onChange={(v) => save({ recycle_bin_retention_days: v })}
+                help="Only files FileFlow itself sent to the Recycle Bin (via Categories → Delete) are ever permanently purged, and only after sitting this long."
+              />
+              <Slider
+                label="Alert when a category exceeds"
+                value={rules.storage_alert_threshold_gb}
+                display={rules.storage_alert_threshold_gb > 0 ? `${rules.storage_alert_threshold_gb} GB` : "Disabled"}
+                muted={!(rules.storage_alert_threshold_gb > 0)}
+                min={0}
+                max={50}
+                step={0.5}
+                onChange={(v) => save({ storage_alert_threshold_gb: v })}
+                help="When a category folder crosses this size, FileFlow notifies you and archives its oldest files to bring it back down. 0 disables this."
+              />
+            </div>
+
+            <div className="mt-4 flex flex-col gap-3">
+              <div className="flex items-center gap-2.5">
+                <span className="ff-kicker">Folders</span>
+                <span className="flex-1 border-t border-dashed border-[var(--rule-2)]" />
+              </div>
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="flex min-w-0 flex-[1_1_220px] flex-col gap-1.5 text-[12.5px] font-semibold">
+                  Archive folder name
+                  <input value={archiveFolder} onChange={(e) => setArchiveFolder(e.target.value)} onBlur={commitArchiveFolder} className="ff-input" />
+                </label>
+                <span className="pb-2.5">
+                  <FolderTag>{`${watchBase}/${archiveFolder || "Archive"}`}</FolderTag>
+                </span>
+              </div>
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="flex min-w-0 flex-[1_1_220px] flex-col gap-1.5 text-[12.5px] font-semibold">
+                  Fallback folder name
+                  <input value={defaultCategory} onChange={(e) => setDefaultCategory(e.target.value)} onBlur={commitDefaultCategory} className="ff-input" />
+                </label>
+                <span className="pb-2.5">
+                  <FolderTag>{`${watchBase}/${defaultCategory || "Others"}`}</FolderTag>
+                </span>
+              </div>
+              <span className="text-[12px] text-[var(--ink-muted)]">The fallback folder is tier 09: files that don't match any rule or category.</span>
+            </div>
+          </Card>
+
+          <Card id="remote-agent" n="04" title="Remote agent" desc="Sort a folder on your own Windows PC.">
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-3.5">
+              <span aria-hidden="true" className="grid h-11 w-11 flex-none place-items-center rounded-full border-[1.5px] border-[var(--rule-2)]">
+                <span
+                  className="h-3.5 w-3.5 rounded-full"
+                  style={{
+                    background: user?.agent_connected ? "var(--filed)" : "var(--ink-muted)",
+                    boxShadow: `0 0 0 5px ${user?.agent_connected ? "var(--filed-bg)" : "var(--sheet-2)"}`,
+                  }}
+                />
+              </span>
+              <div className="flex min-w-0 flex-[1_1_260px] flex-col gap-[3px]">
+                <b className="text-[15px]">{user?.agent_connected ? "Agent connected" : "Agent not connected"}</b>
+                <span className="text-[12.5px] text-[var(--ink-2)]">
+                  Install the agent from the Downloads menu. The first time it runs it asks for this dashboard's address and a token —
+                  generate one here and paste it in.
+                </span>
+              </div>
+            </div>
+            <div className="mt-4 flex flex-wrap items-center gap-2.5">
+              <div role="radiogroup" aria-label="Token permissions" className="flex overflow-hidden rounded-[4px] border border-[var(--ink)]">
+                {[
+                  ["full", "Full control"],
+                  ["read_only", "Read-only"],
+                ].map(([id, label]) => {
+                  const on = selectedTokenScope === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      role="radio"
+                      aria-checked={on}
+                      onClick={() => setSelectedTokenScope(id)}
+                      className="h-[34px] cursor-pointer border-none px-3.5 text-[12.5px] font-semibold"
+                      style={{ background: on ? "var(--ink)" : "transparent", color: on ? "var(--paper)" : "var(--ink)" }}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              <button type="button" onClick={handleGenerateAgentToken} disabled={generatingToken} className="ff-btn ff-btn-primary">
+                {generatingToken ? "Generating…" : "Generate agent token"}
               </button>
-            </>
-          )}
-        </section>
+            </div>
+            <p className="m-0 mt-2 text-[12px] text-[var(--ink-muted)]">
+              {selectedTokenScope === "full"
+                ? "Can watch, organize, and report activity — what a real agent installation needs."
+                : "Can only fetch rules — can't move files, report activity, or run commands. Useful for a monitoring or preview integration."}
+            </p>
+            {tokenError && <span className="mt-2 block text-xs text-[var(--stamp)]">{tokenError}</span>}
+            {agentToken && (
+              <div className="mt-4 rounded-[4px] border border-[var(--rule-2)] bg-[var(--sheet-2)] p-3">
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-[var(--ink-2)]">
+                    Shown once — copy it now
+                    {agentTokenScope === "read_only" && <span className="ml-1.5 font-mono-data text-[10.5px] text-[var(--warn)]">READ-ONLY</span>}
+                  </span>
+                  <button type="button" onClick={copyAgentToken} className="ff-btn ff-btn-tertiary ff-btn-sm">
+                    {tokenCopied ? "Copied" : "Copy"}
+                  </button>
+                </div>
+                <code className="block break-all font-mono-data text-[11px]">{agentToken}</code>
+                <p className="m-0 mt-2 text-xs text-[var(--warn)]">
+                  Generating a new token immediately invalidates this one and any others issued before it.
+                </p>
+              </div>
+            )}
+          </Card>
+
+          <Card id="two-factor" n="05" title="Two-factor" desc="Ask for a 6-digit code at sign in.">
+            {twoFactorEnabled === null ? (
+              <p className="m-0 text-xs text-[var(--ink-muted)]">Loading…</p>
+            ) : backupCodes ? (
+              <div className="rounded-[4px] border border-[var(--rule-2)] bg-[var(--sheet-2)] p-3">
+                <p className="m-0 mb-2 text-xs font-semibold text-[var(--ink-2)]">
+                  Save these backup codes — shown once. Each works one time if you lose access to your authenticator app.
+                </p>
+                <div className="grid grid-cols-2 gap-1.5 font-mono-data text-xs">
+                  {backupCodes.map((c) => (
+                    <code key={c} className="rounded-[2px] bg-[var(--sheet)] px-2 py-1">
+                      {c}
+                    </code>
+                  ))}
+                </div>
+                <button type="button" onClick={() => setBackupCodes(null)} className="ff-btn ff-btn-primary mt-3">
+                  I've saved these
+                </button>
+              </div>
+            ) : twoFactorSetup ? (
+              <div className="rounded-[4px] border border-[var(--rule-2)] bg-[var(--sheet-2)] p-3">
+                <p className="m-0 mb-3 text-xs text-[var(--ink-2)]">
+                  Scan this with your authenticator app (Google Authenticator, Authy, etc.), then enter the 6-digit code it shows.
+                </p>
+                <img src={twoFactorSetup.qr_code_data_uri} alt="2FA setup QR code" className="mb-3 h-40 w-40 rounded-[4px] border border-[var(--rule-2)] bg-white p-2" />
+                <p className="m-0 mb-3 text-xs text-[var(--ink-muted)]">
+                  Can't scan it? Enter this key manually: <code className="font-mono-data text-[var(--ink)]">{twoFactorSetup.secret}</code>
+                </p>
+                <label className="mb-3 flex flex-col gap-1.5 text-[12.5px] font-semibold">
+                  6-digit code
+                  <input value={enableCode} onChange={(e) => setEnableCode(e.target.value)} placeholder="123456" className="ff-input" />
+                </label>
+                {twoFactorError && <p className="m-0 mb-3 text-xs text-[var(--stamp)]">{twoFactorError}</p>}
+                <div className="flex gap-2">
+                  <button type="button" onClick={handleEnableTwoFactor} disabled={enablingTwoFactor || !enableCode.trim()} className="ff-btn ff-btn-primary">
+                    {enablingTwoFactor ? "Verifying…" : "Enable"}
+                  </button>
+                  <button type="button" onClick={cancelTwoFactorSetup} className="ff-btn ff-btn-tertiary">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-4">
+                  <div className="flex min-w-0 flex-[1_1_0] flex-col gap-0.5">
+                    <b className="text-[13.5px]">Two-factor authentication</b>
+                    <span className="text-[12px]" style={{ color: twoFactorEnabled ? "var(--filed)" : "var(--ink-muted)" }}>
+                      {twoFactorEnabled ? "Enabled" : "Off"}
+                    </span>
+                  </div>
+                  {twoFactorEnabled ? (
+                    <button type="button" onClick={() => setDisable2FADialogOpen(true)} className="ff-btn ff-btn-tertiary">
+                      Disable
+                    </button>
+                  ) : (
+                    <button type="button" onClick={handleStartTwoFactorSetup} disabled={startingSetup} className="ff-btn ff-btn-primary">
+                      {startingSetup ? "Starting…" : "Set up 2FA"}
+                    </button>
+                  )}
+                </div>
+                {twoFactorError && <p className="m-0 mt-3 text-xs text-[var(--stamp)]">{twoFactorError}</p>}
+              </>
+            )}
+          </Card>
+
+          <Card id="danger-zone" n="06" title="Danger zone" desc="Permanent and can't be undone." danger>
+            <div className="flex items-center gap-4">
+              <p className="m-0 min-w-0 flex-[1_1_0] text-[12.5px] text-[var(--ink-2)]">
+                Permanently deletes your account, watched-folder history, and rules. Files already organized on disk are left alone.
+              </p>
+              <button type="button" onClick={() => setDeleteDialogOpen(true)} className="ff-btn ff-btn-danger">
+                Delete account
+              </button>
+            </div>
+          </Card>
+        </div>
       </div>
+
+      <SaveToast status={status} />
 
       <Dialog open={disable2FADialogOpen} onOpenChange={handleDisable2FADialogChange}>
-        <DialogContent className="rounded-2xl bg-[var(--surface-1)] p-6 sm:max-w-[420px]">
-          <DialogTitle className="font-display text-base font-semibold text-[var(--text-primary)]">
-            Disable two-factor authentication?
-          </DialogTitle>
-          <DialogDescription className="text-sm leading-relaxed text-[var(--text-secondary)]">
+        <DialogContent className="p-6 sm:max-w-[420px]">
+          <DialogTitle>Disable two-factor authentication?</DialogTitle>
+          <DialogDescription className="text-sm leading-relaxed text-[var(--ink-2)]">
             Your account will only need a password to sign in. Enter your password to confirm.
           </DialogDescription>
           <PasswordInput
@@ -887,69 +865,27 @@ export default function Settings() {
             value={disable2FAPassword}
             onChange={(e) => setDisable2FAPassword(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && disable2FAPassword && !disablingTwoFactor) {
-                handleDisableTwoFactor();
-              }
+              if (e.key === "Enter" && disable2FAPassword && !disablingTwoFactor) handleDisableTwoFactor();
             }}
           />
-          {disable2FAError && (
-            <p className="text-xs" style={{ color: "var(--status-critical)" }}>
-              {disable2FAError}
-            </p>
-          )}
+          {disable2FAError && <p className="m-0 text-xs text-[var(--stamp)]">{disable2FAError}</p>}
           <DialogFooter>
             <Button variant="outline" onClick={() => handleDisable2FADialogChange(false)}>
               Cancel
             </Button>
-            <Button
-              variant="destructive"
-              disabled={!disable2FAPassword || disablingTwoFactor}
-              onClick={handleDisableTwoFactor}
-            >
+            <Button variant="destructive" disabled={!disable2FAPassword || disablingTwoFactor} onClick={handleDisableTwoFactor}>
               {disablingTwoFactor ? "Disabling…" : "Disable"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      <div className="px-8 pb-8">
-        <section
-          className="rounded-2xl border p-5 shadow-sm"
-          style={{ borderColor: "var(--status-critical)", background: "var(--surface-1)" }}
-        >
-          <h2 className="mb-1 text-sm font-medium text-[var(--text-primary)]">Danger zone</h2>
-          <p className="mb-4 text-xs text-[var(--text-muted)]">
-            Permanently deletes your account, watched-folder history, and rules. This can't be
-            undone.
-          </p>
-          <button
-            type="button"
-            onClick={() => setDeleteDialogOpen(true)}
-            className="rounded-lg border px-4 py-2 text-sm font-medium hover:opacity-90"
-            style={{ borderColor: "var(--status-critical)", color: "var(--status-critical)" }}
-          >
-            Delete account
-          </button>
-        </section>
-      </div>
-
       <Dialog open={deleteDialogOpen} onOpenChange={handleDeleteDialogChange}>
-        <DialogContent className="rounded-2xl bg-[var(--surface-1)] p-6 sm:max-w-[420px]">
-          <span
-            className="flex h-11 w-11 items-center justify-center rounded-full"
-            style={{
-              color: "var(--status-critical)",
-              background: "color-mix(in srgb, var(--status-critical) 14%, transparent)",
-            }}
-          >
-            <AlertTriangle className="h-5 w-5" />
-          </span>
-          <DialogTitle className="mt-3 font-display text-base font-semibold text-[var(--text-primary)]">
-            Delete your account?
-          </DialogTitle>
-          <DialogDescription className="text-sm leading-relaxed text-[var(--text-secondary)]">
-            This permanently deletes your account, activity history, and rules. Files already
-            organized on disk are left alone. Enter your password to confirm.
+        <DialogContent tab="Danger zone" className="p-6 sm:max-w-[420px]">
+          <DialogTitle>Delete your account?</DialogTitle>
+          <DialogDescription className="text-sm leading-relaxed text-[var(--ink-2)]">
+            This permanently deletes your account, activity history, and rules. Files already organized on disk are left alone. Enter your
+            password to confirm.
           </DialogDescription>
           <PasswordInput
             autoFocus
@@ -960,20 +896,12 @@ export default function Settings() {
               if (e.key === "Enter" && deletePassword && !deletingAccount) handleDeleteAccount();
             }}
           />
-          {deleteError && (
-            <p className="text-xs" style={{ color: "var(--status-critical)" }}>
-              {deleteError}
-            </p>
-          )}
+          {deleteError && <p className="m-0 text-xs text-[var(--stamp)]">{deleteError}</p>}
           <DialogFooter>
             <Button variant="outline" onClick={() => handleDeleteDialogChange(false)}>
               Cancel
             </Button>
-            <Button
-              variant="destructive"
-              disabled={!deletePassword || deletingAccount}
-              onClick={handleDeleteAccount}
-            >
+            <Button variant="destructive" disabled={!deletePassword || deletingAccount} onClick={handleDeleteAccount}>
               {deletingAccount ? "Deleting…" : "Delete account"}
             </Button>
           </DialogFooter>

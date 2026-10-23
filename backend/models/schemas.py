@@ -878,8 +878,19 @@ def _reject_passwords_over_bcrypt_byte_limit(value: str) -> str:
 
 
 class RegisterRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("name")
+    @classmethod
+    def _normalize_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Name cannot be blank.")
+        return value
 
     @field_validator("password")
     @classmethod
@@ -918,6 +929,7 @@ class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    name: str | None = None
     email: str
     created_at: datetime
     watch_folder: str

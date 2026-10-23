@@ -47,10 +47,13 @@ function doneCommand(overrides = {}) {
 }
 
 describe("ActivityTable's per-row agent-command status badge", () => {
-  it("shows the existing default badge unchanged when no command matches the row", () => {
+  it("shows no agent status at all when no command matches the row", () => {
     render(<ActivityTable logs={[makeLog()]} showStatusBadge commandStatusByLogId={{}} />);
 
-    expect(screen.getByText("Completed")).toBeInTheDocument();
+    // A row with no agent command has nothing to report -- no placeholder
+    // "Completed" badge is invented for it.
+    expect(screen.queryByText("Completed")).not.toBeInTheDocument();
+    expect(screen.queryByText(/agent:/i)).not.toBeInTheDocument();
   });
 
   it("shows Waiting for agent… when the matching undo command is pending", () => {
@@ -139,9 +142,8 @@ describe("ActivityTable's per-row agent-command status badge", () => {
       />,
     );
 
-    // No command matches log_id 1 -- falls back to the existing default,
-    // not the unrelated row 999's pending status.
-    expect(screen.getByText("Completed")).toBeInTheDocument();
+    // No command matches log_id 1 -- the unrelated row 999's pending
+    // status must not leak onto it.
     expect(screen.queryByText(/waiting for agent/i)).not.toBeInTheDocument();
   });
 
@@ -199,10 +201,13 @@ describe("ActivityTable's per-row agent-command status badge", () => {
 });
 
 describe("ActivityTable's 'Why?' explanation", () => {
-  it("does not show a Why button when the log has no explanation", () => {
+  it("says no explanation was recorded when the log has none, without inventing a rule", () => {
     render(<ActivityTable logs={[makeLog()]} />);
 
-    expect(screen.queryByRole("button", { name: /why/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /why/i }));
+
+    expect(screen.getByText(/no explanation was recorded/i)).toBeInTheDocument();
+    expect(screen.queryByText(/matched value/i)).not.toBeInTheDocument();
   });
 
   it("shows a Why button when the log carries an explanation", () => {
@@ -245,10 +250,12 @@ describe("ActivityTable's 'Why?' explanation", () => {
     fireEvent.click(screen.getByRole("button", { name: /why/i }));
 
     expect(screen.getByText('Keyword "invoice"')).toBeInTheDocument();
-    expect(screen.getByText("Keyword")).toBeInTheDocument();
+    // "Keyword" is both the match-type fact and the tier-01 ladder cell.
+    expect(screen.getAllByText("Keyword").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('"invoice"')).toBeInTheDocument();
     expect(screen.getByText("Finance Folder")).toBeInTheDocument();
-    expect(screen.getByText("1")).toBeInTheDocument();
+    expect(screen.getByText("1 of 9")).toBeInTheDocument();
+    expect(screen.getByLabelText("Matched tier 1 of 9")).toBeInTheDocument();
   });
 
   it("collapses again on a second click", () => {

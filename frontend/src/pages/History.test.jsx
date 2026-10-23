@@ -32,6 +32,9 @@ vi.mock("../services/api.js", () => ({
   agentInstallerUrl: vi.fn(() => "/api/agent-installer"),
   simulateDownloadUrl: vi.fn(() => "/api/simulate-download"),
   wsUrl: vi.fn(() => "ws://localhost/ws"),
+  // Pulled in transitively by the shared Header component -- not part of
+  // what this file is testing, just what's needed to mount the real page.
+  getOrganizationHealth: vi.fn().mockResolvedValue({ agent_connected: false }),
 }));
 
 vi.mock("../context/RulesContext.jsx", () => ({
@@ -64,7 +67,8 @@ describe("History undo/reclassify failure handling", () => {
     renderHistory();
 
     const row = await screen.findByText("report.pdf");
-    fireEvent.click(row.closest("div.flex").querySelector("button"));
+    expect(row).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^undo$/i }));
 
     await waitFor(() => expect(screen.getByText(/couldn't undo/i)).toBeInTheDocument());
     // The per-row undo button must re-enable after the failure, not stay
@@ -91,7 +95,8 @@ describe("History undo/reclassify failure handling", () => {
     renderHistory();
 
     const row = await screen.findByText("report.pdf");
-    fireEvent.click(row.closest("div.flex").querySelector("button"));
+    expect(row).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^undo$/i }));
 
     expect(await screen.findByText("Restored to its original location.")).toBeInTheDocument();
   });
