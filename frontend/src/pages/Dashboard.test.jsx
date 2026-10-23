@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import Dashboard from "./Dashboard.jsx";
 
 const mockGetStats = vi.fn();
@@ -133,52 +133,6 @@ function renderDashboard() {
 }
 
 describe("Dashboard mutation failure handling", () => {
-  it("shows an error when a reclassify fails, instead of failing silently", async () => {
-    mockGetStats.mockResolvedValue({
-      total_files_organized: 1,
-      duplicates_detected: 0,
-      storage_saved_bytes: 0,
-      today_count: 0,
-      last_7_days: [],
-    });
-    mockGetCategories.mockResolvedValue([]);
-    mockGetWeeklyReports.mockResolvedValue([]);
-    mockGetAgentCommands.mockResolvedValue([]);
-    mockReclassifyLog.mockRejectedValueOnce({ response: { status: 500 } });
-    renderDashboard();
-
-    await screen.findByText("report.pdf");
-    fireEvent.change(screen.getByTitle("Move this file to a different category"), {
-      target: { value: "Archive" },
-    });
-
-    await waitFor(() =>
-      expect(screen.getByText(/couldn't reclassify/i)).toBeInTheDocument(),
-    );
-  });
-
-  it("shows an error when 'Undo last operation' fails, instead of failing silently", async () => {
-    mockGetStats.mockResolvedValue({
-      total_files_organized: 1,
-      duplicates_detected: 0,
-      storage_saved_bytes: 0,
-      today_count: 0,
-      last_7_days: [],
-    });
-    mockGetCategories.mockResolvedValue([]);
-    mockGetWeeklyReports.mockResolvedValue([]);
-    mockGetAgentCommands.mockResolvedValue([]);
-    mockUndoLastOperation.mockRejectedValueOnce({ response: { status: 500 } });
-    renderDashboard();
-
-    const undoButton = await screen.findByRole("button", { name: /^undo$/i });
-    fireEvent.click(undoButton);
-
-    await waitFor(() =>
-      expect(screen.getByText(/couldn't undo the last operation/i)).toBeInTheDocument(),
-    );
-  });
-
   it("shows an error when the existing-files sweep fails, instead of failing silently", async () => {
     mockGetStats.mockResolvedValue({
       total_files_organized: 1,
@@ -204,7 +158,7 @@ describe("Dashboard mutation failure handling", () => {
     renderDashboard();
 
     fireEvent.click(
-      await screen.findByRole("button", { name: /organize existing files now/i }),
+      await screen.findByRole("button", { name: /preview the plan/i }),
     );
     fireEvent.click(await screen.findByRole("button", { name: /organize 1 file/i }));
 
@@ -235,7 +189,7 @@ describe("Dashboard's organization preview flow", () => {
   async function openPreview() {
     renderDashboard();
     fireEvent.click(
-      await screen.findByRole("button", { name: /organize existing files now/i }),
+      await screen.findByRole("button", { name: /preview the plan/i }),
     );
   }
 
@@ -410,9 +364,15 @@ describe("Dashboard's AI Unclassified File Suggestions flow", () => {
     mockOrganizeExistingFiles.mockReset();
   });
 
+  // The entry point is the "Needs you" item, shown whenever health reports
+  // unclassified files.
   async function openSuggestions() {
+    mockGetOrganizationHealth.mockResolvedValue({
+      ...DEFAULT_HEALTH,
+      files: { ...DEFAULT_HEALTH.files, unclassified: 3 },
+    });
     renderDashboard();
-    fireEvent.click(await screen.findByRole("button", { name: /get ai suggestions/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /unclassified files/i }));
   }
 
   it("opens the dialog and shows a suggestion", async () => {
@@ -669,12 +629,12 @@ describe("Dashboard's Duplicate Files flow", () => {
 
   async function openDuplicates() {
     renderDashboard();
-    fireEvent.click(await screen.findByRole("button", { name: /find duplicates/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /find duplicate files/i }));
   }
 
   it("opens the dialog and shows the entry point", async () => {
     renderDashboard();
-    expect(await screen.findByText("Duplicate files")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /find duplicate files/i })).toBeInTheDocument();
   });
 
   it("shows the summary and a group after analysis", async () => {
@@ -782,7 +742,7 @@ describe("Dashboard's Duplicate Files flow", () => {
       }),
     );
     renderDashboard();
-    const button = await screen.findByRole("button", { name: /find duplicates/i });
+    const button = await screen.findByRole("button", { name: /find duplicate files/i });
 
     fireEvent.click(button);
     fireEvent.click(button);
@@ -873,7 +833,7 @@ describe("Dashboard's Natural Language File Search flow", () => {
 
   async function openSearch() {
     renderDashboard();
-    fireEvent.click(await screen.findByRole("button", { name: /search files/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /search your files/i }));
   }
 
   function typeAndSearch(text) {
@@ -885,7 +845,7 @@ describe("Dashboard's Natural Language File Search flow", () => {
 
   it("opens the dialog and shows the entry point", async () => {
     renderDashboard();
-    expect(await screen.findByText("Search your files")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /search your files/i })).toBeInTheDocument();
   });
 
   it("running a search shows the interpretation and results", async () => {
@@ -1031,6 +991,10 @@ describe("Dashboard's Natural Language File Search flow", () => {
   });
 });
 
+async function openHealth() {
+  fireEvent.click(await screen.findByRole("button", { name: /organization health/i }));
+}
+
 describe("Dashboard's FileFlow Health panel", () => {
   beforeEach(() => {
     mockGetStats.mockResolvedValue({
@@ -1084,6 +1048,7 @@ describe("Dashboard's FileFlow Health panel", () => {
     mockGetOrganizationHealth.mockResolvedValue(HEALTHY_DATA);
 
     renderDashboard();
+    await openHealth();
 
     expect(await screen.findByText("96% classified")).toBeInTheDocument();
     expect(screen.getAllByText(/4 unclassified files/i).length).toBeGreaterThan(0);
@@ -1098,6 +1063,7 @@ describe("Dashboard's FileFlow Health panel", () => {
     );
 
     renderDashboard();
+    await openHealth();
 
     expect(await screen.findByText(/loading workspace health/i)).toBeInTheDocument();
     resolveIt(HEALTHY_DATA);
@@ -1108,10 +1074,11 @@ describe("Dashboard's FileFlow Health panel", () => {
     mockGetOrganizationHealth.mockRejectedValue(new Error("network error"));
 
     renderDashboard();
-
-    expect(await screen.findByText(/couldn't load workspace health/i)).toBeInTheDocument();
     // The rest of the Dashboard must still work.
     expect(await screen.findByText("report.pdf")).toBeInTheDocument();
+    await openHealth();
+
+    expect(await screen.findByText(/couldn't load workspace health/i)).toBeInTheDocument();
   });
 
   it("shows unavailable sections without a fabricated zero for an agent-connected account", async () => {
@@ -1123,6 +1090,7 @@ describe("Dashboard's FileFlow Health panel", () => {
     });
 
     renderDashboard();
+    await openHealth();
 
     expect((await screen.findAllByText(/isn't available yet for a connected agent/i)).length).toBe(2);
     expect(screen.queryByText(/% classified/)).not.toBeInTheDocument();
@@ -1132,6 +1100,7 @@ describe("Dashboard's FileFlow Health panel", () => {
     mockGetOrganizationHealth.mockResolvedValue(HEALTHY_DATA);
 
     renderDashboard();
+    await openHealth();
     await screen.findByText("96% classified");
 
     expect(mockGetUnclassifiedSuggestions).not.toHaveBeenCalled();
@@ -1143,6 +1112,7 @@ describe("Dashboard's FileFlow Health panel", () => {
     mockGetUnclassifiedSuggestions.mockResolvedValue({ total: 4, unclassified: 4, suggestions: [] });
 
     renderDashboard();
+    await openHealth();
     await screen.findByText("96% classified");
     fireEvent.click(screen.getAllByText(/review unclassified/i)[0]);
 
@@ -1155,6 +1125,7 @@ describe("Dashboard's FileFlow Health panel", () => {
     mockAnalyzeDuplicates.mockResolvedValue({ queued: false, duplicate_groups: 3, duplicate_files: 6, groups: [] });
 
     renderDashboard();
+    await openHealth();
     await screen.findByText("96% classified");
     fireEvent.click(screen.getAllByText(/review duplicates/i)[0]);
 
@@ -1165,16 +1136,21 @@ describe("Dashboard's FileFlow Health panel", () => {
     mockGetOrganizationHealth.mockResolvedValue(HEALTHY_DATA);
 
     renderDashboard();
+    await openHealth();
     await screen.findByText("96% classified");
     fireEvent.click(screen.getByRole("button", { name: /^refresh$/i }));
 
+    // 1 (Dashboard's own mount) + 1 (this Refresh click). Header -- which
+    // independently fetches health for its own agent-connected pill -- is
+    // rendered at the layout level now, not inside Dashboard's own tree,
+    // so it contributes no calls here.
     await waitFor(() => expect(mockGetOrganizationHealth).toHaveBeenCalledTimes(2));
   });
 
   it("rapid repeated Refresh clicks do not fire duplicate requests", async () => {
     let resolveSecond;
     mockGetOrganizationHealth
-      .mockResolvedValueOnce(HEALTHY_DATA)
+      .mockResolvedValueOnce(HEALTHY_DATA) // Dashboard's own mount-effect call
       .mockReturnValueOnce(
         new Promise((resolve) => {
           resolveSecond = resolve;
@@ -1182,6 +1158,7 @@ describe("Dashboard's FileFlow Health panel", () => {
       );
 
     renderDashboard();
+    await openHealth();
     await screen.findByText("96% classified");
     const refreshButton = screen.getByRole("button", { name: /^refresh$/i });
 
@@ -1200,17 +1177,17 @@ describe("Dashboard's FileFlow Health panel", () => {
     renderDashboard();
 
     expect(await screen.findByText("report.pdf")).toBeInTheDocument();
-    expect(screen.getByText("Files organized")).toBeInTheDocument();
+    expect(screen.getByText("filed this week")).toBeInTheDocument();
   });
 });
 
-describe("Dashboard's Active rules panel", () => {
+describe("Dashboard v5 layout", () => {
   beforeEach(() => {
     mockGetStats.mockResolvedValue({
       total_files_organized: 1,
       duplicates_detected: 0,
       storage_saved_bytes: 0,
-      today_count: 0,
+      today_count: 12,
       last_7_days: [],
     });
     mockGetCategories.mockResolvedValue([]);
@@ -1220,36 +1197,48 @@ describe("Dashboard's Active rules panel", () => {
     mockGetOrganizationHealth.mockResolvedValue(DEFAULT_HEALTH);
   });
 
-  afterEach(() => {
-    rulesOverride.keywordRules = [];
-    vi.restoreAllMocks();
+  it("shows latest slips as a receipt with no Undo / Move to / Why controls", async () => {
+    renderDashboard();
+    await screen.findByText("report.pdf");
+
+    expect(screen.queryByRole("button", { name: /^undo$/i })).not.toBeInTheDocument();
+    expect(screen.queryByTitle("Move this file to a different category")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /why/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /report\.pdf/i })).toHaveAttribute("title", "Open in Activity");
   });
 
-  it("renders two keyword rules that share a keyword, without a duplicate-key warning", async () => {
-    // A legitimate state: the same keyword twice (a redundant or shadowed
-    // rule -- exactly what the Rule Conflict Detector reports). RulesOut
-    // imposes no uniqueness on keyword_rules.
-    rulesOverride.keywordRules = [
-      { keyword: "invoice", folder: "Finance/Invoices" },
-      { keyword: "invoice", folder: "Finance/Archive" },
-      { keyword: "college", folder: "Semester 9" },
-    ];
-    const errorSpy = vi.spyOn(console, "error");
-
+  it("shows the same four machine-room metrics", async () => {
     renderDashboard();
-    // Scoped to the panel: the same folder names also appear as <option>s in
-    // the activity table's "Move to…" selects.
-    const panel = (await screen.findByRole("heading", { name: "Active rules" })).parentElement;
+    await screen.findByText("report.pdf");
+    for (const label of ["filed this week", "in category folders", "unclassified", "rule conflicts"]) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
+    expect(screen.getByRole("img", { name: "12 files filed today" })).toBeInTheDocument();
+  });
 
-    // Both rules are still shown, each with its own destination.
-    expect(within(panel).getAllByText("invoice")).toHaveLength(2);
-    expect(within(panel).getByText(/Finance\/Invoices/)).toBeInTheDocument();
-    expect(within(panel).getByText(/Finance\/Archive/)).toBeInTheDocument();
-    expect(within(panel).getByText("college")).toBeInTheDocument();
+  it("no longer renders the old health / agent / active-rules panels inline", async () => {
+    renderDashboard();
+    await screen.findByText("report.pdf");
+    expect(screen.queryByText("FileFlow Health")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Active rules" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/get ai suggestions/i)).not.toBeInTheDocument();
+  });
 
-    const keyWarnings = errorSpy.mock.calls.filter((args) =>
-      /same key|unique "key"/i.test(String(args[0])),
+  it("adds a Needs you item when an agent command is pending", async () => {
+    mockGetAgentCommands.mockImplementation(({ type }) =>
+      Promise.resolve(
+        type === "undo"
+          ? [{ id: 1, type: "undo", status: "pending", success: null, created_at: new Date().toISOString() }]
+          : [],
+      ),
     );
-    expect(keyWarnings).toEqual([]);
+    renderDashboard();
+    expect(await screen.findByRole("button", { name: /agent commands/i })).toBeInTheDocument();
+    mockGetAgentCommands.mockReset();
+  });
+
+  it("says nothing is waiting when health reports no problems", async () => {
+    renderDashboard();
+    expect(await screen.findByText(/nothing is waiting on you/i)).toBeInTheDocument();
   });
 });

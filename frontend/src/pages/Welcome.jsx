@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
-import { FolderKanban, FolderOpen, LayoutTemplate, Zap, Loader2 } from "lucide-react";
+import { FolderOpen, LayoutTemplate, Zap, Loader2 } from "lucide-react";
 import { Button } from "../components/ui/button.jsx";
-import GradientField from "../components/GradientField.jsx";
+import BrandMark from "../components/BrandMark.jsx";
 import Toggle from "../components/ui/Toggle.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import {
@@ -125,9 +125,8 @@ export default function Welcome() {
   }
 
   return (
-    <div className="relative flex min-h-dvh items-center justify-center overflow-hidden bg-[var(--page)] px-6 py-12">
+    <div className="welcome-page relative flex min-h-dvh items-center justify-center overflow-hidden bg-[var(--page)] px-6 py-12">
       <div className="absolute inset-0 bg-grid-light pointer-events-none" />
-      <GradientField />
 
       <motion.div
         initial={{ opacity: 0, y: 16 }}
@@ -137,9 +136,7 @@ export default function Welcome() {
       >
         <div className="mb-6 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--brand)] text-[var(--brand-foreground)] shadow-sm shadow-[var(--brand)]/30">
-              <FolderKanban className="h-[18px] w-[18px]" />
-            </span>
+            <BrandMark light />
             <span className="font-display text-base font-semibold text-[var(--text-primary)]">
               FileFlow
             </span>

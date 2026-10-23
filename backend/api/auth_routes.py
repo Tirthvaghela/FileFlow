@@ -74,6 +74,7 @@ def register(request: RegisterRequest, response: Response, db=Depends(get_db)):
     user_id = next_id(db, "users")
     watch_folder = default_watch_folder_for(user_id)
     doc = new_user(
+        name=request.name,
         email=request.email,
         password_hash=hash_password(request.password),
         watch_folder=str(watch_folder),

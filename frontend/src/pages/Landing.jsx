@@ -9,7 +9,6 @@ import {
   Copy,
   Fingerprint,
   FolderInput,
-  FolderKanban,
   Mail,
   Radar,
   Scan,
@@ -21,7 +20,8 @@ import { Button } from "../components/ui/button.jsx";
 import TiltCard from "../components/ui/TiltCard.jsx";
 import AnimatedNumber from "../components/ui/AnimatedNumber.jsx";
 import GradientField from "../components/GradientField.jsx";
-import SortVisualization from "../components/SortVisualization.jsx";
+import BrandMark from "../components/BrandMark.jsx";
+import RuleOrderPreview from "../components/RuleOrderPreview.jsx";
 
 const FEATURES = [
   {
@@ -168,7 +168,7 @@ export default function Landing() {
   );
 
   return (
-    <div className="relative min-h-dvh overflow-hidden bg-[var(--page)]">
+    <div className="landing-page relative min-h-dvh overflow-hidden bg-[var(--page)]">
       <div className="absolute inset-0 bg-grid-light z-0 pointer-events-none" />
 
       <header className="relative z-10 mx-auto flex max-w-[1440px] items-center justify-between px-6 py-6 lg:px-10">
@@ -178,9 +178,7 @@ export default function Landing() {
           transition={{ duration: 0.5, ease: "easeOut" }}
           className="flex items-center gap-2.5"
         >
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--brand)] text-[var(--brand-foreground)] shadow-sm shadow-[var(--brand)]/30">
-            <FolderKanban className="h-[18px] w-[18px]" />
-          </span>
+          <BrandMark light />
           <span className="font-display text-base font-semibold tracking-tight text-[var(--text-primary)]">
             FileFlow
           </span>
@@ -205,7 +203,6 @@ export default function Landing() {
 
       <main className="relative z-10">
         <section className="relative">
-          <GradientField className="z-0" />
           <div className="relative z-10 mx-auto grid max-w-[1440px] grid-cols-1 items-center gap-14 px-6 pt-16 pb-24 lg:px-10 lg:grid-cols-[1.1fr_1fr] lg:pt-20">
             <motion.div variants={containerVariants} initial="hidden" animate="show">
               <motion.div
@@ -223,19 +220,11 @@ export default function Landing() {
                 variants={itemVariants}
                 className="font-display text-5xl leading-[1.05] font-medium tracking-tight text-[var(--text-primary)] sm:text-6xl"
               >
-                Your Downloads folder,
+                Every download,
                 <br />
-                <span className="relative inline-block">
-                  <span className="relative z-10 text-[var(--brand)]">organized</span>
-                  <motion.span
-                    initial={{ scaleX: 0 }}
-                    animate={{ scaleX: 1 }}
-                    transition={{ duration: 0.6, delay: 1, ease: "easeOut" }}
-                    style={{ transformOrigin: "left" }}
-                    className="absolute -bottom-1 left-0 h-3 w-full origin-left rounded-full bg-[var(--brand)]/15"
-                  />
-                </span>{" "}
-                while you sleep.
+                filed where it
+                <br />
+                <span className="text-[var(--brand)]">belongs.</span>
               </motion.h1>
 
               <motion.p
@@ -268,7 +257,13 @@ export default function Landing() {
               transition={{ duration: 0.6, delay: 0.25, ease: "easeOut" }}
               className="flex justify-center lg:justify-end"
             >
-              <SortVisualization className="max-w-xl" height={340} />
+              <div className="landing-rule-card">
+                <p className="ff-kicker">Your sorting rules</p>
+                <RuleOrderPreview />
+                <p className="landing-rule-caption">
+                  The first rule that matches decides where each file belongs.
+                </p>
+              </div>
             </motion.div>
           </div>
         </section>

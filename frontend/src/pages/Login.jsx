@@ -71,12 +71,13 @@ export default function Login() {
   if (pendingToken) {
     return (
       <AuthLayout
+        eyebrow="Two-factor authentication"
         title="Enter your code"
         subtitle="Open your authenticator app, or use a backup code"
       >
         <motion.form
           onSubmit={handleVerifyCode}
-          className="space-y-4"
+          className="auth-fields space-y-4"
           variants={containerVariants}
           initial="hidden"
           animate="show"
@@ -125,10 +126,10 @@ export default function Login() {
   }
 
   return (
-    <AuthLayout title="Welcome back" subtitle="Sign in to your FileFlow account">
+    <AuthLayout eyebrow="Sign in" title="Open your workspace">
       <motion.form
         onSubmit={handleSubmit}
-        className="space-y-4"
+        className="auth-fields space-y-4"
         variants={containerVariants}
         initial="hidden"
         animate="show"
@@ -142,16 +143,19 @@ export default function Login() {
             required
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com"
+            placeholder="tirth@example.com"
           />
         </motion.div>
         <motion.div variants={fieldVariants} className="space-y-1.5">
           <div className="flex items-center justify-between">
             <Label htmlFor="password">Password</Label>
-
+            <Link to="/forgot-password" className="text-xs font-medium text-primary hover:underline">
+              Forgot password?
+            </Link>
           </div>
           <PasswordInput
             id="password"
+            showText
             autoComplete="current-password"
             required
             value={password}
@@ -160,11 +164,6 @@ export default function Login() {
           />
 
         </motion.div>
-        <div className="text-right">
-          <Link to="/forgot-password" className="text-xs font-medium text-primary hover:underline">
-            Forgot password?
-          </Link>
-        </div>
         {error && (
           <motion.p
             initial={{ opacity: 0, y: -6 }}
@@ -176,7 +175,7 @@ export default function Login() {
         )}
 
         <motion.div variants={fieldVariants} whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.99 }}>
-          <Button type="submit" disabled={submitting} className="w-full" size="lg">
+          <Button type="submit" disabled={submitting} className="auth-submit w-full" size="lg">
             {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
             {submitting ? "Signing in…" : "Sign in"}
           </Button>
@@ -184,9 +183,9 @@ export default function Login() {
       </motion.form>
 
       <p className="mt-6 text-center text-sm text-[var(--text-muted)]">
-        Don't have an account?{" "}
+        New to FileFlow?{" "}
         <Link to="/register" className="font-medium text-primary hover:underline">
-          Create one
+          Create an account
         </Link>
       </p>
     </AuthLayout>

@@ -1,165 +1,246 @@
-import { useEffect, useRef, useState } from "react";
-import { motion } from "motion/react";
-import Header from "../components/Header.jsx";
-import StatCard from "../components/StatCard.jsx";
-import EmptyState from "../components/EmptyState.jsx";
-import AnimatedNumber from "../components/ui/AnimatedNumber.jsx";
-import { CalendarDays, Copy, Database, FileText, FileX } from "lucide-react";
-import { csvReportUrl, excelReportUrl, getWeeklyReports, pdfReportUrl } from "../services/api.js";
+import { useEffect, useMemo, useState } from "react";
+import PageHeading from "../components/PageHeading.jsx";
+import Kicker from "../components/Kicker.jsx";
+import { csvReportUrl, excelReportUrl, getLogs, getWeeklyReports, pdfReportUrl } from "../services/api.js";
 import { formatBytes } from "../utils/categoryMeta.js";
-import { gsap, useGSAP } from "../lib/gsap.js";
+import { groupLogsByTier, ORGANIZED_ACTIONS, pad2 } from "../utils/ruleTiers.js";
+
+function fmtDay(iso, opts = { month: "short", day: "numeric" }) {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, opts);
+}
 
 function formatRange(start, end) {
-  const s = new Date(`${start}T00:00:00`);
-  const e = new Date(`${end}T00:00:00`);
-  const opts = { month: "short", day: "numeric" };
-  return `${s.toLocaleDateString(undefined, opts)} – ${e.toLocaleDateString(undefined, opts)}`;
+  return `${fmtDay(start)} – ${fmtDay(end)}`;
 }
+
+// Local calendar date as YYYY-MM-DD (never via toISOString, which would
+// shift the day for any timezone ahead of UTC).
+function localDay(d) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function addDays(iso, n) {
+  const d = new Date(`${iso}T00:00:00`);
+  d.setDate(d.getDate() + n);
+  return localDay(d);
+}
+
+function logDay(log) {
+  return log.timestamp ? localDay(new Date(log.timestamp)) : "";
+}
+
+const PERIODS = [
+  { id: "this", label: "This week" },
+  { id: "last", label: "Last week" },
+  { id: "four", label: "4 weeks" },
+];
 
 export default function Reports() {
   const [weekly, setWeekly] = useState(null);
-  const tbodyRef = useRef(null);
+  const [logs, setLogs] = useState([]);
+  const [period, setPeriod] = useState("this");
 
   useEffect(() => {
-    getWeeklyReports(4)
+    getWeeklyReports(8)
       .then(setWeekly)
       .catch(() => setWeekly([]));
+    getLogs(500)
+      .then((l) => setLogs(Array.isArray(l) ? l : []))
+      .catch(() => {});
   }, []);
 
-  const current = weekly?.[0];
+  // The selected period, built only from the real weekly report rows.
+  const view = useMemo(() => {
+    if (!weekly || weekly.length === 0) return null;
+    const weeks = period === "this" ? weekly.slice(0, 1) : period === "last" ? weekly.slice(1, 2) : weekly.slice(0, 4);
+    if (weeks.length === 0) return { empty: true };
+    const start = weeks[weeks.length - 1].week_start;
+    const end = weeks[0].week_end;
+    const sum = (k) => weeks.reduce((s, w) => s + (w[k] || 0), 0);
+    return {
+      weeks,
+      start,
+      end,
+      kpis: [
+        { label: "Files organized", value: sum("files_organized") },
+        { label: "Duplicates removed", value: sum("duplicates_removed") },
+        { label: "Storage optimized", value: formatBytes(sum("storage_optimized_bytes")) },
+        { label: "Files archived", value: sum("files_archived") },
+      ],
+    };
+  }, [weekly, period]);
 
-  useGSAP(
-    () => {
-      if (!tbodyRef.current) return;
-      gsap.from("tr", { opacity: 0, y: 6, stagger: 0.04, duration: 0.3, ease: "power1.out" });
-    },
-    { dependencies: [weekly], scope: tbodyRef },
-  );
+  // Bars: per day for a single week (counted from the activity log), per
+  // week for the 4-week view (straight from the weekly report rows).
+  const bars = useMemo(() => {
+    if (!view || view.empty) return [];
+    if (period === "four") {
+      return [...view.weeks].reverse().map((w) => ({ key: w.week_start, label: fmtDay(w.week_start), value: w.files_organized }));
+    }
+    const days = Array.from({ length: 7 }, (_, i) => addDays(view.start, i));
+    return days.map((day) => ({
+      key: day,
+      label: fmtDay(day, { weekday: "short" }),
+      value: logs.filter(
+        (l) => !l.undone && ORGANIZED_ACTIONS.has(l.action) && logDay(l) === day,
+      ).length,
+    }));
+  }, [view, period, logs]);
+
+  const tiers = useMemo(() => {
+    if (!view || view.empty) return [];
+    const inRange = logs.filter((l) => {
+      const d = logDay(l);
+      return d >= view.start && d <= view.end;
+    });
+    return groupLogsByTier(inRange).filter((t) => t.count > 0);
+  }, [view, logs]);
+
+  const max = Math.max(1, ...bars.map((b) => b.value));
+  const peak = bars.reduce((best, b, i) => (b.value > (bars[best]?.value ?? -1) ? i : best), 0);
+  const tierMax = Math.max(1, ...tiers.map((t) => t.count));
+  const unit = period === "four" ? "per week" : "per day";
 
   return (
     <>
-      <Header title="Reports" subtitle="Weekly summaries and exports" />
-      <div className="space-y-6 p-8">
-        {current && (
-          <motion.div
-            initial={{ opacity: 0, y: 12, scale: 0.99 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            transition={{ duration: 0.4, ease: "easeOut" }}
-            className="rounded-2xl border border-[var(--brand)]/20 bg-gradient-to-br from-[var(--surface-1)] to-[var(--brand)]/[0.14] p-6 shadow-lg shadow-[var(--brand)]/10 text-[var(--text-primary)]"
-          >
-            <div className="mb-3 flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <p className="font-mono-data text-xs font-medium uppercase tracking-wide text-[var(--text-secondary)]">
-                  Weekly report · {formatRange(current.week_start, current.week_end)}
-                </p>
-                <h2 className="mt-1 text-2xl font-semibold">
-                  <AnimatedNumber value={current.files_organized} /> files organized this week
-                </h2>
-                <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                  {current.duplicates_removed} duplicates removed ·{" "}
-                  {formatBytes(current.storage_optimized_bytes)} storage optimized ·{" "}
-                  {current.files_archived} archived
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <a
-                  href={csvReportUrl(current.week_start, current.week_end)}
-                  className="rounded-lg bg-[var(--gridline)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--baseline)]"
+      <PageHeading index={6} kicker="Reports" title="Reports" subtitle="What FileFlow did over a period, from your activity log." />
+      <div className="ff-in flex flex-col gap-6">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div role="radiogroup" aria-label="Period" className="flex overflow-hidden rounded-[4px] border border-[var(--ink)]">
+            {PERIODS.map((p) => {
+              const on = period === p.id;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  onClick={() => setPeriod(p.id)}
+                  className="h-[34px] cursor-pointer border-none px-3.5 text-[12.5px] font-semibold transition-colors"
+                  style={{ background: on ? "var(--ink)" : "transparent", color: on ? "var(--paper)" : "var(--ink)" }}
                 >
-                  Export CSV
-                </a>
-                <a
-                  href={pdfReportUrl()}
-                  className="rounded-lg bg-[var(--brand)] px-3 py-2 text-sm font-medium text-[var(--brand-foreground)] hover:opacity-90"
-                >
-                  Export PDF (full history)
-                </a>
-              </div>
-            </div>
-          </motion.div>
-        )}
-
-        {current && (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {[
-              { label: "Files organized", value: current.files_organized, icon: FileText, iconColor: "var(--series-1)" },
-              { label: "Duplicates removed", value: current.duplicates_removed, icon: Copy, iconColor: "var(--series-7)" },
-              { label: "Storage optimized", value: formatBytes(current.storage_optimized_bytes), icon: Database, iconColor: "var(--status-good)" },
-              { label: "Files archived", value: current.files_archived, icon: CalendarDays, iconColor: "var(--series-2)" },
-            ].map((card, i) => (
-              <motion.div
-                key={card.label}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.35, delay: i * 0.05, ease: "easeOut" }}
-              >
-                <StatCard label={card.label} value={card.value} icon={card.icon} iconColor={card.iconColor} />
-              </motion.div>
-            ))}
+                  {p.label}
+                </button>
+              );
+            })}
           </div>
-        )}
-
-        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-5 shadow-sm">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-medium text-[var(--text-secondary)]">
-              Recent reports
-            </h2>
-            <a
-              href={excelReportUrl()}
-              className="text-xs font-medium text-[var(--brand)] hover:underline"
-            >
-              Export full history (Excel)
-            </a>
-          </div>
-          {weekly === null ? (
-            <p className="py-8 text-center text-sm text-[var(--text-muted)]">Loading…</p>
-          ) : weekly.length === 0 ? (
-            <EmptyState icon={FileX} message="No activity yet." />
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-[var(--border)] text-[var(--text-muted)]">
-                    <th className="py-2 pr-4 font-medium">Period</th>
-                    <th className="py-2 pr-4 font-medium">Files</th>
-                    <th className="py-2 pr-4 font-medium">Duplicates</th>
-                    <th className="py-2 pr-4 font-medium">Storage</th>
-                    <th className="py-2 pr-4 font-medium"></th>
-                  </tr>
-                </thead>
-                <tbody ref={tbodyRef}>
-                  {weekly.map((w) => (
-                    <tr
-                      key={w.week_start}
-                      className="border-b border-[var(--border)] last:border-0 transition-colors hover:bg-[var(--gridline)]/40"
-                    >
-                      <td className="py-2.5 pr-4 font-medium text-[var(--text-primary)]">
-                        {formatRange(w.week_start, w.week_end)}
-                      </td>
-                      <td className="py-2.5 pr-4 text-[var(--text-secondary)]">
-                        {w.files_organized} files
-                      </td>
-                      <td className="py-2.5 pr-4 text-[var(--text-secondary)]">
-                        {w.duplicates_removed} dupes
-                      </td>
-                      <td className="py-2.5 pr-4 text-[var(--text-secondary)]">
-                        {formatBytes(w.storage_optimized_bytes)}
-                      </td>
-                      <td className="py-2.5 pr-4 text-right">
-                        <a
-                          href={csvReportUrl(w.week_start, w.week_end)}
-                          className="rounded-md border border-[var(--border)] px-3 py-1 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--gridline)]"
-                        >
-                          Download
-                        </a>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          {view && !view.empty && (
+            <span className="font-mono-data text-[12px] text-[var(--ink-muted)]">{formatRange(view.start, view.end)}</span>
           )}
+          <span className="ml-auto flex flex-wrap gap-1.5">
+            {view && !view.empty && (
+              <a href={csvReportUrl(view.start, view.end)} className="ff-btn ff-btn-primary no-underline">
+                Export CSV ({PERIODS.find((p) => p.id === period).label.toLowerCase()})
+              </a>
+            )}
+            <a href={excelReportUrl()} className="ff-btn ff-btn-tertiary no-underline">
+              Excel (full history)
+            </a>
+            <a href={pdfReportUrl()} className="ff-btn ff-btn-tertiary no-underline">
+              Export PDF (full history)
+            </a>
+          </span>
         </div>
+
+        {weekly === null ? (
+          <p className="py-8 text-center text-[13px] text-[var(--ink-muted)]">Loading…</p>
+        ) : weekly.length === 0 ? (
+          <div className="flex flex-col gap-1.5 py-[30px]">
+            <b className="ff-display text-[18px]">No activity yet.</b>
+            <span className="text-[var(--ink-muted)]">Reports fill in once FileFlow has organized files.</span>
+          </div>
+        ) : view?.empty ? (
+          <p className="m-0 py-6 text-[13px] text-[var(--ink-muted)]">No report rows for this period yet.</p>
+        ) : (
+          <>
+            <div className="grid border-b border-t-2 border-[var(--rule)] border-t-[var(--ink)]" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}>
+              {view.kpis.map((k) => (
+                <div key={k.label} className="flex flex-col gap-[3px] border-r border-dashed border-[var(--rule-2)] py-3.5 pl-3.5 first:pl-0">
+                  <span className="font-mono-data text-[28px] font-semibold tracking-[-0.03em]">{k.value}</span>
+                  <span className="text-[12px] text-[var(--ink-2)]">{k.label}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex flex-wrap gap-7">
+              <section aria-label="Files organized over time" className="flex min-w-0 flex-[3_1_460px] flex-col gap-2.5">
+                <h2 className="ff-kicker m-0 text-[11px] font-bold">Files organized · {unit}</h2>
+                <div className="relative flex h-[220px] items-end gap-2 border-b-[1.5px] border-[var(--ink)] pl-[34px]">
+                  <span aria-hidden="true" className="absolute left-0 top-[-6px] font-mono-data text-[10.5px] text-[var(--ink-muted)]">{max}</span>
+                  <span aria-hidden="true" className="absolute left-[34px] right-0 top-0 border-t border-dashed border-[var(--rule-2)]" />
+                  <span aria-hidden="true" className="absolute left-0 top-[calc(50%-6px)] font-mono-data text-[10.5px] text-[var(--ink-muted)]">
+                    {Math.round(max / 2)}
+                  </span>
+                  <span aria-hidden="true" className="absolute left-[34px] right-0 top-1/2 border-t border-dashed border-[var(--rule-2)]" />
+                  {bars.map((b, i) => (
+                    <div key={b.key} title={`${b.label}: ${b.value} files`} className="relative flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1">
+                      <span className="font-mono-data text-[11px] font-semibold">{b.value}</span>
+                      <span
+                        className="ff-in w-full max-w-[56px] rounded-[2px_2px_0_0]"
+                        style={{
+                          height: `${(b.value / max) * 190}px`,
+                          background: i === peak && b.value > 0 ? "var(--stamp)" : "var(--ink)",
+                          animationDelay: `${i * 40}ms`,
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="flex gap-2 pl-[34px]">
+                  {bars.map((b) => (
+                    <span key={b.key} className="min-w-0 flex-1 truncate text-center font-mono-data text-[10.5px] text-[var(--ink-muted)]">
+                      {b.label}
+                    </span>
+                  ))}
+                </div>
+                {period !== "four" && (
+                  <p className="m-0 text-[12px] text-[var(--ink-muted)]">Daily bars count the most recent 500 activity-log entries.</p>
+                )}
+              </section>
+
+              {tiers.length > 0 && (
+                <section aria-label="Which tier decided" className="flex min-w-0 flex-[2_1_300px] flex-col gap-2.5">
+                  <h2 className="ff-kicker m-0 text-[11px] font-bold">Which rule tier decided</h2>
+                  {tiers.map((t) => (
+                    <div key={t.matchType} className="grid items-center gap-2.5" style={{ gridTemplateColumns: "110px 1fr 40px" }}>
+                      <span className="text-[12.5px] font-semibold">
+                        <span className="mr-1.5 font-mono-data text-[10.5px] text-[var(--ink-muted)]">{pad2(t.n)}</span>
+                        {t.label}
+                      </span>
+                      <span className="h-3.5 overflow-hidden rounded-[2px] bg-[var(--rule)]">
+                        <span
+                          className="block h-full"
+                          style={{ width: `${(t.count / tierMax) * 100}%`, background: t.n === 1 ? "var(--stamp)" : "var(--ink-2)" }}
+                        />
+                      </span>
+                      <span className="text-right font-mono-data text-[12px] font-semibold">{t.count}</span>
+                    </div>
+                  ))}
+                  <p className="m-0 mt-1 text-[12px] text-[var(--ink-muted)]">From the match type stored with each file in the activity log.</p>
+                </section>
+              )}
+            </div>
+          </>
+        )}
+
+        {weekly && weekly.length > 0 && (
+          <section aria-label="Recent weeks" className="flex flex-col gap-2">
+            <Kicker>Recent weeks</Kicker>
+            <div className="flex flex-col border-t border-[var(--ink)]">
+              {weekly.map((w) => (
+                <div key={w.week_start} className="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-b border-[var(--rule)] px-1 py-2.5">
+                  <span className="basis-[130px] font-mono-data text-[12.5px] font-semibold">{formatRange(w.week_start, w.week_end)}</span>
+                  <span className="basis-[80px] font-mono-data text-[12px] text-[var(--ink-2)]">{w.files_organized} files</span>
+                  <span className="basis-[80px] font-mono-data text-[12px] text-[var(--ink-2)]">{w.duplicates_removed} dupes</span>
+                  <span className="basis-[80px] font-mono-data text-[12px] text-[var(--ink-2)]">{formatBytes(w.storage_optimized_bytes)}</span>
+                  <a href={csvReportUrl(w.week_start, w.week_end)} className="ff-btn ff-btn-tertiary ff-btn-sm ml-auto no-underline">
+                    Download
+                  </a>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
       </div>
     </>
   );

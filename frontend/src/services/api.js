@@ -29,8 +29,8 @@ api.interceptors.response.use(
   },
 );
 
-export const register = (email, password) =>
-  api.post("/api/auth/register", { email, password }).then((r) => r.data);
+export const register = (email, password, name) =>
+  api.post("/api/auth/register", { email, password, name }).then((r) => r.data);
 export const login = (email, password) =>
   api.post("/api/auth/login", { email, password }).then((r) => r.data);
 export const logout = () => api.post("/api/auth/logout").then((r) => r.data);

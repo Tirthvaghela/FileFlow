@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from "./dialog.jsx";
 import { Button } from "./button.jsx";
+import { Badge } from "./badge.jsx";
 
 const STATUS_META = {
   ready: { label: "Ready to move", color: "var(--status-good)", icon: CheckCircle2 },
@@ -88,8 +89,14 @@ export default function OrganizePreviewDialog({
         className="rounded-2xl bg-[var(--surface-1)] p-6 sm:max-w-[560px]"
       >
         <DialogHeader>
-          <DialogTitle className="font-display text-base font-semibold text-[var(--text-primary)]">
-            Organization Preview
+          <DialogTitle className="flex items-center gap-2 font-display text-base font-semibold text-[var(--text-primary)]">
+            <span>Organization Preview</span>
+            <Badge
+              variant="secondary"
+              className="border border-[var(--primary-line)] bg-[var(--primary-tint)] text-[var(--primary)]"
+            >
+              Read-only
+            </Badge>
           </DialogTitle>
           <DialogDescription className="text-sm text-[var(--text-secondary)]">
             {waitingForAgent

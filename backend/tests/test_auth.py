@@ -8,17 +8,27 @@ from main import app
 class TestRegister:
     def test_creates_a_user_and_sets_a_session_cookie(self, anon_client):
         resp = anon_client.post(
-            "/api/auth/register", json={"email": "new@example.com", "password": "supersecret1"}
+            "/api/auth/register",
+            json={"name": "Tirth V.", "email": "new@example.com", "password": "supersecret1"},
         )
 
         assert resp.status_code == 201
         body = resp.json()
+        assert body["name"] == "Tirth V."
         assert body["email"] == "new@example.com"
         assert "password" not in body
         assert "password_hash" not in body
         assert "fileflow_session" in resp.cookies
         # A brand-new account hasn't seen the setup wizard yet.
         assert body["onboarding_completed"] is False
+
+    def test_rejects_a_blank_name(self, anon_client):
+        resp = anon_client.post(
+            "/api/auth/register",
+            json={"name": "   ", "email": "blank-name@example.com", "password": "supersecret1"},
+        )
+
+        assert resp.status_code == 422
 
     def test_rejects_a_duplicate_email(self, anon_client):
         anon_client.post(

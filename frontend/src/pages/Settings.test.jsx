@@ -30,6 +30,7 @@ vi.mock("../services/api.js", () => ({
   agentInstallerUrl: vi.fn(() => "/api/agent/download"),
   simulateDownloadUrl: vi.fn(() => "/api/simulate-download"),
   wsUrl: vi.fn(() => "ws://localhost/ws"),
+  getOrganizationHealth: vi.fn().mockResolvedValue({ agent_connected: false }),
 }));
 // A persistent default so every describe block that doesn't care about 2FA
 // status specifically (i.e. everything except the 2FA-focused block below)
@@ -219,7 +220,7 @@ describe("Settings' remote-agent one-folder limitation warning", () => {
     };
     await renderSettings();
 
-    expect(screen.getByText("Remote agent")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Remote agent" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /generate agent token/i })).toBeInTheDocument();
   });
 });
@@ -427,5 +428,40 @@ describe("2FA enable/disable failure handling", () => {
 
     await waitFor(() => expect(screen.getByText("Incorrect password.")).toBeInTheDocument());
     expect(screen.getByText(/^enabled$/i)).toBeInTheDocument();
+  });
+});
+
+describe("Settings v5 layout", () => {
+  beforeEach(() => {
+    mockSaveRules.mockReset();
+    mockSaveRules.mockResolvedValue({});
+    mockUser = { id: 1, watch_folder: "C:\\watch", additional_watch_folders: [], agent_connected: false };
+    mockGetTwoFactorStatus.mockResolvedValue({ enabled: false });
+  });
+
+  it("shows a numbered section nav with live states", async () => {
+    await renderSettings();
+    const nav = screen.getByRole("navigation", { name: /settings sections/i });
+    expect(nav).toHaveTextContent("01Watch folders1 folder");
+    expect(nav).toHaveTextContent("Auto-sort on");
+    expect(nav).toHaveTextContent("Rename · 30 days");
+    expect(nav).toHaveTextContent("Not connected");
+  });
+
+  it("picks duplicate handling with radio cards", async () => {
+    await renderSettings();
+    const skip = screen.getByRole("radio", { name: /skip/i });
+    expect(screen.getByRole("radio", { name: /rename/i })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(skip);
+    await waitFor(() => expect(mockSaveRules).toHaveBeenCalledTimes(1));
+    expect(mockSaveRules.mock.calls[0][0]({})).toEqual({ duplicate_handling: "skip" });
+    expect(await screen.findByText("Saved")).toBeInTheDocument();
+  });
+
+  it("renders every toggle as a labelled switch", async () => {
+    await renderSettings();
+    for (const name of [/real-time monitoring/i, /desktop notifications/i, /scheduled nightly sweep/i]) {
+      expect(screen.getByRole("switch", { name })).toBeInTheDocument();
+    }
   });
 });

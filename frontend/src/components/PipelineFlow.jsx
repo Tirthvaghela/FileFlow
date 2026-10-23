@@ -1,123 +1,49 @@
-import { useRef, useState } from "react";
-import { gsap, useGSAP } from "../lib/gsap.js";
+const DUPLICATE_LABELS = { rename: "rename", skip: "skip", replace: "replace" };
 
-const STEPS = ["Detected", "Classified", "Duplicate check", "Moved", "Logged"];
+// The real, fixed FileFlow architecture -- five stages every file passes
+// through, Classify filled in ink as the step that does the work. Every
+// sub-stat is read from real state the caller already has.
+function steps({ running, activeRules, duplicateHandling, totalLogged }) {
+  return [
+    { n: 1, title: "Detect", body: "Watchdog or your PC agent sees a file once it stops changing.", sub: running ? "monitoring on" : "monitoring paused" },
+    { n: 2, title: "Classify", body: "Rules are checked in a fixed order of 9 tiers.", sub: `${activeRules ?? "—"} rule${activeRules === 1 ? "" : "s"}`, emphasis: true },
+    { n: 3, title: "Explain", body: "Match type, value and rule are stored with the file.", sub: "kept per file" },
+    { n: 4, title: "Move", body: "Python or a UiPath robot moves it into the folder.", sub: `duplicates: ${DUPLICATE_LABELS[duplicateHandling] || "rename"}` },
+    { n: 5, title: "Log", body: "Every action is written to Activity and can be undone.", sub: `${totalLogged ?? "—"} entries` },
+  ];
+}
 
-export default function PipelineFlow({ running }) {
-  const containerRef = useRef(null);
-  const pathRef = useRef(null);
-  const dotRef = useRef(null);
-  const chipRefs = useRef([]);
-  const [svgSize, setSvgSize] = useState({ width: 0, height: 0 });
-  const [pathD, setPathD] = useState("");
-
-  useGSAP(
-    () => {
-      const chips = chipRefs.current.filter(Boolean);
-      const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      if (chips.length === 0) return;
-
-      const container = containerRef.current;
-      const width = container.offsetWidth;
-      const height = container.offsetHeight;
-      setSvgSize({ width, height });
-
-      // Real vector path (not just a dot moved between DOM offsets) --
-      // straight segments between each chip's center, which also
-      // naturally handles the row wrapping to a second line on narrow
-      // screens since each segment only ever connects two real points.
-      const points = chips.map((el) => ({
-        x: el.offsetLeft + el.offsetWidth / 2,
-        y: el.offsetTop + el.offsetHeight / 2,
-      }));
-      const d = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x},${p.y}`).join(" ");
-      setPathD(d);
-
-      if (!running || reduced) {
-        gsap.set(dotRef.current, { opacity: 0 });
-        gsap.set(pathRef.current, { drawSVG: "0%" });
-        return;
-      }
-
-      // Wait a tick for the path's `d` to actually be in the DOM (state
-      // update above triggers a re-render) before drawSVG/motionPath read
-      // its geometry.
-      requestAnimationFrame(() => {
-        if (!pathRef.current) return;
-        gsap.set(pathRef.current, { drawSVG: "0%" });
-        gsap.set(dotRef.current, { opacity: 1 });
-
-        const tl = gsap.timeline({ repeat: -1, repeatDelay: 0.6 });
-        const segments = chips.length - 1;
-        chips.forEach((chip, i) => {
-          tl.addLabel(`step${i}`)
-            .to(
-              pathRef.current,
-              { drawSVG: `0% ${(i / segments) * 100}%`, duration: 0.5, ease: "power1.inOut" },
-              `step${i}`,
-            )
-            .to(chip, { scale: 1.06, borderColor: "var(--brand)", duration: 0.2, ease: "power1.out" }, `step${i}`)
-            .to(chip, { scale: 1, borderColor: "var(--border)", duration: 0.3, ease: "power1.in" }, `step${i}+=0.3`);
-          if (i < segments) {
-            tl.to(
-              dotRef.current,
-              {
-                motionPath: {
-                  path: pathRef.current,
-                  start: i / segments,
-                  end: (i + 1) / segments,
-                },
-                duration: 0.5,
-                ease: "power1.inOut",
-              },
-              `step${i}`,
-            );
-          }
-        });
-
-        return () => tl.kill();
-      });
-    },
-    { dependencies: [running], scope: containerRef },
-  );
+export default function PipelineFlow({ running, activeRules, duplicateHandling, totalLogged }) {
+  const stages = steps({ running, activeRules, duplicateHandling, totalLogged });
 
   return (
-    <div ref={containerRef} className="relative mt-4 flex flex-wrap items-center gap-2">
-      <svg
-        className="pointer-events-none absolute inset-0 overflow-visible"
-        width={svgSize.width}
-        height={svgSize.height}
-      >
-        <path
-          ref={pathRef}
-          d={pathD}
-          fill="none"
-          stroke="var(--brand)"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          opacity="0.5"
-        />
-      </svg>
-      <span
-        ref={dotRef}
-        className="pointer-events-none absolute h-2 w-2 rounded-full opacity-0"
-        style={{ background: "var(--brand)", boxShadow: "0 0 8px var(--brand)" }}
-      />
-      {STEPS.map((step, i) => (
-        <span key={step} className="flex items-center gap-2">
-          <span
-            ref={(el) => (chipRefs.current[i] = el)}
-            className="relative flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--gridline)]/50 px-3 py-1 text-xs text-[var(--text-secondary)]"
-          >
-            <span
-              className="h-1.5 w-1.5 rounded-full"
-              style={{ background: running ? "var(--status-good)" : "var(--text-muted)" }}
-            />
-            {step}
-          </span>
-          {i < STEPS.length - 1 && <span className="text-[var(--text-muted)]">→</span>}
+    <section aria-label="How FileFlow sorts" className="flex flex-col gap-2.5 border-t-[1.5px] border-[var(--ink)] pt-1.5">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1.5">
+        <span className="ff-kicker">How a file moves</span>
+        <span className="text-[12px] text-[var(--ink-muted)]">
+          New downloads go straight down the line. Only “Organize existing files” stops at a preview, then re-scans and
+          re-plans when you confirm.
         </span>
-      ))}
-    </div>
+      </div>
+      <ol className="m-0 grid list-none grid-cols-2 gap-2 p-0 sm:grid-cols-[repeat(auto-fit,minmax(170px,1fr))]">
+        {stages.map((s, i) => (
+          <li key={s.n} className="ff-in flex items-start gap-2.5 py-2.5" style={{ animationDelay: `${i * 50}ms` }}>
+            <span
+              className="grid h-[26px] w-[26px] shrink-0 place-items-center rounded-full border-[1.5px] border-[var(--ink)] font-mono-data text-[11px] font-semibold"
+              style={{ background: s.emphasis ? "var(--ink)" : "transparent", color: s.emphasis ? "var(--paper)" : "var(--ink)" }}
+            >
+              {s.n}
+            </span>
+            <span className="flex min-w-0 flex-col gap-[3px]">
+              <b className="text-[13px] font-extrabold uppercase tracking-[0.05em]" style={{ fontStretch: "116%" }}>
+                {s.title}
+              </b>
+              <span className="text-[12px] leading-[1.35] text-[var(--ink-2)]">{s.body}</span>
+              <span className="font-mono-data text-[11px] text-[var(--ink-muted)]">{s.sub}</span>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }

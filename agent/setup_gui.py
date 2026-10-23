@@ -89,19 +89,33 @@ def run_setup_wizard(existing: AgentConfig | None = None) -> AgentConfig | None:
         # user typing into a GUI text box could reasonably intend), and
         # the agent later interprets it relative to whatever directory the
         # packaged .exe happens to be launched from instead.
-        watch_folder = str(Path(watch_folder).expanduser().resolve())
-        save_config(backend_url, token, watch_folder)
+        try:
+            watch_folder = str(Path(watch_folder).expanduser().resolve())
+            save_config(backend_url, token, watch_folder)
+        except OSError as exc:
+            messagebox.showerror(
+                "Couldn't save settings",
+                f"FileFlow couldn't save the agent configuration:\n{exc}",
+                parent=root,
+            )
+            return
         saved["backend_url"] = backend_url
         saved["token"] = token
         saved["watch_folder"] = watch_folder
         root.destroy()
+
+    def on_cancel() -> None:
+        saved.clear()
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_cancel)
 
     button_row = 8
     tk.Button(root, text="Save & Start", command=on_save, default="active").grid(
         row=button_row, column=1, padx=16, pady=16, sticky="e"
     )
     if existing is not None:
-        tk.Button(root, text="Cancel", command=root.destroy).grid(
+        tk.Button(root, text="Cancel", command=on_cancel).grid(
             row=button_row, column=0, padx=16, pady=16, sticky="w"
         )
 
@@ -110,6 +124,7 @@ def run_setup_wizard(existing: AgentConfig | None = None) -> AgentConfig | None:
     x = (root.winfo_screenwidth() - width) // 2
     y = (root.winfo_screenheight() - height) // 2
     root.geometry(f"+{x}+{y}")
+    root.lift()
 
     root.mainloop()
 

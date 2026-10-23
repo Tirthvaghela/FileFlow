@@ -28,6 +28,7 @@ const fieldVariants = {
 export default function Register() {
   const { register } = useAuth();
   const navigate = useNavigate();
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -44,7 +45,7 @@ export default function Register() {
 
     setSubmitting(true);
     try {
-      await register(email, password);
+      await register(email, password, name.trim());
       navigate("/app", { replace: true });
     } catch (err) {
       setError(extractErrorMessage(err));
@@ -54,14 +55,26 @@ export default function Register() {
   }
 
   return (
-    <AuthLayout title="Create your account" subtitle="Start organizing your downloads automatically">
+    <AuthLayout eyebrow="Create account" title="Start sorting">
       <motion.form
         onSubmit={handleSubmit}
-        className="space-y-4"
+        className="auth-fields space-y-4"
         variants={containerVariants}
         initial="hidden"
         animate="show"
       >
+        <motion.div variants={fieldVariants} className="space-y-1.5">
+          <Label htmlFor="name">Name</Label>
+          <Input
+            id="name"
+            autoComplete="name"
+            required
+            maxLength={80}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Your name"
+          />
+        </motion.div>
         <motion.div variants={fieldVariants} className="space-y-1.5">
           <Label htmlFor="email">Email</Label>
           <Input
@@ -81,10 +94,11 @@ export default function Register() {
             autoComplete="new-password"
             required
             minLength={8}
+            showText
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="At least 8 characters"
           />
+          <p className="auth-hint">At least 8 characters.</p>
         </motion.div>
 
         {error && (
@@ -98,7 +112,7 @@ export default function Register() {
         )}
 
         <motion.div variants={fieldVariants} whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.99 }}>
-          <Button type="submit" disabled={submitting} className="w-full" size="lg">
+          <Button type="submit" disabled={submitting} className="auth-submit w-full" size="lg">
             {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
             {submitting ? "Creating account…" : "Create account"}
           </Button>
@@ -106,7 +120,7 @@ export default function Register() {
       </motion.form>
 
       <p className="mt-6 text-center text-sm text-[var(--text-muted)]">
-        Already have an account?{" "}
+        Already have one?{" "}
         <Link to="/login" className="font-medium text-primary hover:underline">
           Sign in
         </Link>

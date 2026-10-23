@@ -72,6 +72,7 @@ def new_activity_log(**kwargs) -> Document:
 
 
 def new_user(**kwargs) -> Document:
+    name = kwargs.pop("name", None)
     doc = Document(
         email=kwargs.pop("email"),
         password_hash=kwargs.pop("password_hash"),
@@ -82,4 +83,6 @@ def new_user(**kwargs) -> Document:
     )
     if kwargs:
         raise TypeError(f"new_user() got unexpected fields: {sorted(kwargs)}")
+    if name is not None:
+        doc["name"] = name
     return doc

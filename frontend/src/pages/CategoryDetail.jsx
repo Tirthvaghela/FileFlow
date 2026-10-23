@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import { ArrowLeft, ArrowUpDown, FileX, Trash2 } from "lucide-react";
-import Header from "../components/Header.jsx";
+import PageHeading from "../components/PageHeading.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import ConfirmDialog from "../components/ui/ConfirmDialog.jsx";
 import { deleteCategoryFile, getCategoryFiles } from "../services/api.js";
@@ -97,8 +97,8 @@ export default function CategoryDetail() {
 
   return (
     <>
-      <Header title={category} subtitle="Files in this category" />
-      <div className="p-8">
+      <PageHeading index={5} kicker="Cabinet" title={category} subtitle="Files in this category." />
+      <div>
         <button
           onClick={() => navigate("/app/categories")}
           className="mb-4 flex items-center gap-1.5 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
